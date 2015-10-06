@@ -7,12 +7,14 @@ $offscrub03 = “cmd /C cscript $PSScriptRoot\scripts\OffScrub03.vbs $location”
 $offscrub07 = “cmd /C cscript $PSScriptRoot\scripts\OffScrub07.vbs $location”
 $offscrub10 = “cmd /C cscript $PSScriptRoot\scripts\OffScrub10.vbs $location”
 $offscrubO15msi = “cmd /C cscript $PSScriptRoot\scripts\OffScrub_O15msi.vbs $location”
-$offscrubc2r = “cmd /C cscript $PSScriptRoot\scripts\OffScrubC2R.vbs $location”
+$offscrubO15c2r = “cmd /C cscript $PSScriptRoot\scripts\OffScrubC2R.vbs $location”
+$offscrubO16msi = “cmd /C cscript $PSScriptRoot\scripts\OffScrub_O16msi.vbs $location”
+$offscrubO16c2r = “cmd /C cscript $PSScriptRoot\scripts\OffScrubO16C2R.vbs $location”
 	
 
 do {
   [int]$userMenuChoice = 0
-  while ( $userMenuChoice -lt 1 -or $userMenuChoice -gt 7) {
+  while ( $userMenuChoice -lt 1 -or $userMenuChoice -gt 9) {
 	Write-Host "------------Diagnostics-----------"
     Write-Host "1. Run ROIScan"
 	Write-Host "-------------OffScrubs------------"
@@ -21,8 +23,10 @@ do {
 	Write-Host "4. OffScrub Office 2010"
 	Write-Host "5. OffScrub Office 2013 MSI"
 	Write-Host "6. OffScrub Office 2013 Click2Run"
+	Write-Host "7. OffScrub Office 2016 MSI"
+	Write-Host "8. OffScrub Office 2016 Click2Run"
 	Write-Host "----------------------------------"
-	Write-Host "7. Close and exit"
+	Write-Host "9. Close and exit"
 
     [int]$userMenuChoice = Read-Host "Please choose an option"
 
@@ -33,10 +37,11 @@ do {
 	  3{Invoke-Expression $offscrub07}
 	  4{Invoke-Expression $offscrub10}
 	  5{Invoke-Expression $offscrubO15msi}
-	  6{Invoke-Expression $offscrubc2r}
-	  7{$officepath}
+	  6{Invoke-Expression $offscrubO15c2r}
+	  7{Invoke-Expression $offscrubO16msi}
+	  8{Invoke-Expression $offscrubO16c2r}
 }
 }
 	}
- while	 ( $userMenuChoice -ne 7 )
+ while	 ( $userMenuChoice -ne 9 )
 	
