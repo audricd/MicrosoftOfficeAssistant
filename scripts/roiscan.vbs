@@ -1,13 +1,13 @@
-' Name: Robust Office Inventory Scan - Version 1.7.2
+' Name: Robust Office Inventory Scan - Version 1.8.0e
 ' Author: Microsoft Customer Support Services
 ' Copyright (c) Microsoft Corporation. All rights reserved.
 ' Script to create an inventory scan of installed Office applications
 ' Supported Office Families: 2000, 2002, 2003, 2007
-'                            2010, 2013, 365
+'                            2010, 2013, 2016, O365
 
 Option Explicit
 On Error Resume Next
-Const SCRIPTBUILD = "1.7.2"
+Const SCRIPTBUILD = "1.8.0e"
 Dim sPathOutputFolder : sPathOutputFolder = ""
 Dim fQuiet : fQuiet = False
 Dim fLogFeatures : fLogFeatures = False
@@ -26,7 +26,7 @@ Dim fDisallowCScript : fDisallowCScript = False
 'Directory for Log output.
 'Example: "\\<server>\<share>\"
 'Default: sPathOutputFolder = vbNullString -> %temp% directory is used
-sPathOutputFolder = "C:\"
+sPathOutputFolder = ""
 
 'Quiet switch.
 'Default: False -> Open inventory log when done
@@ -79,22 +79,27 @@ tStart = Time()
 ParseCmdLine
 'Definition of non customizable settings
 'Strings 
-Dim sComputerName, sTemp, sCurUserSid, sDebugErr, sError, sErrBpa, sProductCode_C2R_15
+Dim sComputerName, sTemp, sCurUserSid, sDebugErr, sError, sErrBpa, sProductCodes_C2R
 Dim sStack, sCacheLog, sLogFile, sInstalledProducts, sSystemType, sLogFormat
+Dim sPackageGuid, sUserName, sDomain
 'Arrays
 Dim arrAllProducts(), arrMProducts(), arrUUProducts(), arrUMProducts(), arrMaster(), arrArpProducts()
-Dim arrVirtProducts(), arrVirt2Products(), arrPatch(), arrAipPatch, arrMspFiles, arrIS(), arrFeature()
-Dim arrLog(4), arrLogFormat(), arrUUSids(), arrUMSids(), arrMVProducts()
+Dim arrVirtProducts(), arrVirt2Products(), arrVirt3Products(), arrPatch(), arrAipPatch, arrMspFiles
+Dim arrLog(4), arrLogFormat(), arrUUSids(), arrUMSids(), arrMVProducts(), arrIS(), arrFeature()
 Dim arrProdVer09(), arrProdVer10(), arrProdVer11(), arrProdVer12(), arrProdVer14(), arrProdVer15()
-Dim arrFiles()
+Dim arrProdVer16(), arrFiles()
 'Booleans
 Dim fIsAdmin, fIsElevated, fIsCriticalError, fGuidCaseWarningOnly, f64, fPatchesOk, fPatchesExOk
 Dim fCScript, bOsppInit, fZipError, fInitArrProdVer
 'Integers
-Dim iWiVersionMajor,iVersionNt,iPCount,iPatchesExError
+Dim iWiVersionMajor, iVersionNt, iPCount, iPatchesExError
 'Dictionaries
-Dim dicFolders, dicAssembly, dicMspIndex, dicProducts, dicMissingChild
+Dim dicFolders, dicAssembly, dicMspIndex, dicProducts, dicArp, dicMissingChild
 Dim dicPatchLevel, dicScenario, dicKeyComponents
+Dim dicPolHKCU, dicPolHKLM
+Dim dicProductCodeC2R, dicActiveC2Rv2Versions
+Dim dicKeyComponentsV2, dicScenarioV2, dicC2RPropV2, dicVirt2Cultures
+Dim dicKeyComponentsV3, dicScenarioV3, dicC2RPropV3, dicVirt3Cultures
 'Other
 Dim oMsi, oShell, oFso, oReg, oWsh
 Dim TextStream, ShellApp, AppFolder, Ospp, Spp
@@ -115,6 +120,7 @@ Const POWERPIVOT_2010                 = "{72F8ECCE-DAB0-4C23-A471-625FEDABE323},
 Const O15_C2R                         = "{9AC08E99-230B-47e8-9721-4577B7F124EA}"
 Const OFFICEID                        = "000-0000000FF1CE}" 'cover O12, O14 with 32 & 64 bit
 Const OREGREFC2R15                    = "Microsoft Office 15"
+
 Const PRODLEN                         = 13
 Const FOR_READING                     = 1
 Const FOR_WRITING                     = 2
@@ -122,6 +128,7 @@ Const FOR_APPENDING                   = 8
 Const TRISTATE_USEDEFAULT             = -2 'Opens the file using the system default. 
 Const TRISTATE_TRUE                   = -1 'Opens the file as Unicode. 
 Const TRISTATE_FALSE                  = 0  'Opens the file as ASCII. 
+
 Const USERSID_EVERYONE                = "s-1-1-0"
 Const MACHINESID                      = ""
 Const PRODUCTCODE_EMPTY               = ""
@@ -146,6 +153,7 @@ Const MSIINSTALLCONTEXT_USERUNMANAGED = 2
 Const MSIINSTALLCONTEXT_MACHINE       = 4
 Const MSIINSTALLCONTEXT_ALL           = 7
 Const MSIINSTALLCONTEXT_C2RV2         = 8 'C2r V2 virtualized context
+Const MSIINSTALLCONTEXT_C2RV3         = 15 'C2r V3 virtualized context
 Const MSIINSTALLMODE_DEFAULT          = 0    'Provide the component and perform any installation necessary to provide the component. 
 Const MSIINSTALLMODE_EXISTING         = -1   'Provide the component only if the feature exists. This option will verify that the assembly exists.
 Const MSIINSTALLMODE_NODETECTION      = -2   'Provide the component only if the feature exists. This option does not verify that the assembly exists.
@@ -173,8 +181,10 @@ Const VERSIONCOMPARE_LOWER            = -1 'Left hand file version is lower than
 Const VERSIONCOMPARE_MATCH            =  0 'File versions are identical
 Const VERSIONCOMPARE_HIGHER           =  1 'Left hand file versin is higher than right hand
 Const VERSIONCOMPARE_INVALID          =  2 'Cannot compare. Invalid compare attempt.
+
 Const COPY_OVERWRITE                  = &H10&
 Const COPY_SUPPRESSERROR              = &H400& 
+
 Const HKEY_CLASSES_ROOT               = &H80000000
 Const HKEY_CURRENT_USER               = &H80000001
 Const HKEY_LOCAL_MACHINE              = &H80000002
@@ -198,13 +208,32 @@ Const REG_CONTEXTMACHINE              = "Installer\"
 Const REG_CONTEXTUSER                 = "Software\Microsoft\Installer\"
 Const REG_CONTEXTUSERMANAGED          = "Software\Microsoft\Windows\CurrentVersion\Installer\Managed\"
 Const REG_ARP                         = "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\"
-Const REG_C2RVIRT_HKLM                = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\REGISTRY\MACHINE\"
-Const REG_C2RACTIVEPRODS              = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\ProductReleaseIDs\Active\"
-Const REG_C2RPROPERTYBAG              = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\propertyBag"
-Const REG_C2RCONFIG_15                = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\Configuration\"
-Const REG_C2RSCENARIOSP1              = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\scenario\UPDATE\TasksState\"
-Const REG_C2RSCENARIO                 = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\scenario\"
-Const REG_C2R_15                      = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\"
+Const REG_OFFICE                      = "SOFTWARE\Microsoft\Office\"
+Const REG_C2RVIRT_HKLM                = "\ClickToRun\REGISTRY\MACHINE\"
+
+Const STR_NOTCONFIGURED             = "Not Configured"
+Const STR_PACKAGEGUID               = "PackageGUID"
+Const STR_REGPACKAGEGUID            = "RegPackageGUID"
+Const STR_VERSION                   = "Version"
+Const STR_PLATFORM                  = "Platform"
+Const STR_CDNBASEURL                = "CDNBaseUrl"
+Const STR_LASTUSEDBASEURL           = "Last used InstallSource"
+Const STR_UPDATELOCATION            = "Custom UpdateLocation"
+Const STR_USEDUPDATELOCATION        = "Winning UpdateLocation"
+Const STR_UPDATESENABLED            = "UpdatesEnabled"
+Const STR_UPDATEBRANCH              = "UpdateBranch"
+Const STR_UPDATETOVERSION           = "UpdateToVersion"
+Const STR_UPDATETHROTTLE            = "UpdatesThrottleValue"
+Const STR_POLUPDATESENABLED         = "Policy UpdatesEnabled"
+Const STR_POLUPGRADEENABLED         = "Policy EnableAutomaticUpgrade"
+Const STR_POLUPDATEBRANCH           = "Policy UpdateBranch"
+Const STR_POLUPDATELOCATION         = "Policy UpdateLocation"
+Const STR_POLUPDATETOVERSION        = "Policy UpdateToVersion"
+Const STR_POLUPDATEDEADLINE         = "Policy UpdateDeadline"
+Const STR_POLUPDATENOTIFICATIONS    = "Policy UpdateHideNotifications"
+Const STR_POLHIDEUPDATECFGOPT       = "Policy HideUpdateConfigOptions"
+Const STR_SCA                       = "Shared Computer Activation"
+
 Const GUID_UNCOMPRESSED               = 0
 Const GUID_COMPRESSED                 = 1
 Const GUID_SQUISHED                   = 2
@@ -234,6 +263,8 @@ Const OSPP_KEYMANAGEMENTSERVICEPORT = 11
 Const OSPP_VLACTIVATIONINTERVAL = 12
 Const OSPP_VLRENEWALINTERVAL = 13
 'Global_Access_Core - msaccess.exe
+Const CID_ACC16_64 = "{27C919A6-3FA5-47F9-A3EC-BC7FF2AAD452}"
+Const CID_ACC16_32 = "{E34AA7C4-8845-4BD7-BAC6-26554B60823B}"
 Const CID_ACC15_64 = "{3CE2B4B3-DA38-4113-8DB2-965847CDE94F}"
 Const CID_ACC15_32 = "{A3E12EF0-7C3B-4493-99A3-F92FCD0AA512}"
 Const CID_ACC14_64 = "{02F5CBEC-E7B5-4FC1-BD72-6043152BD1D4}"
@@ -241,6 +272,8 @@ Const CID_ACC14_32 = "{AE393348-E564-4894-B8C5-EBBC5E72EFC6}"
 Const CID_ACC12    = "{0638C49D-BB8B-4CD1-B191-054E8F325736}"
 Const CID_ACC11    = "{F2D782F8-6B14-4FA4-8FBA-565CDDB9B2A8}"
 'Global_Excel_Core - excel.exe
+Const CID_XL16_64 = "{C4ACE6DB-AA99-401F-8BE6-8784BD09F003}"
+Const CID_XL16_32 = "{C845E028-E091-442E-8202-21F596C559A0}"
 Const CID_XL15_64 = "{58A9998B-6103-436F-85A1-52720802CA0A}"
 Const CID_XL15_32 = "{107E1A9A-03AE-4F2B-ACF7-0CC519E60E7B}"
 Const CID_XL14_64 = "{8B1BF0B4-A1CA-4656-AA46-D11C50BC55A4}"
@@ -248,6 +281,8 @@ Const CID_XL14_32 = "{538F6C89-2AD5-4006-8154-C6670774E980}"
 Const CID_XL12    = "{0638C49D-BB8B-4CD1-B191-052E8F325736}"
 Const CID_XL11    = "{A2B280D4-20FB-4720-99F7-40C09FBCE10A}"
 'WAC_CoreSPD - spdesign.exe (frontpage.exe)
+Const CID_SPD16_64 = "{2FB768AF-8F57-424A-BBDA-81611CFF3ED2}"
+Const CID_SPD16_32 = "{C3F352B2-A43B-4948-AE54-12E265647697}"
 Const CID_SPD15_64 = "{25B4430E-E7D6-406F-8468-D9B65BC240F3}"
 Const CID_SPD15_32 = "{0F0A451D-CB3C-44BE-B8A4-E72C2B89C4A2}"
 Const CID_SPD14_64 = "{6E4D3AA2-2AD9-4DD2-8C2D-8C55B656A5C9}"
@@ -255,15 +290,21 @@ Const CID_SPD14_32 = "{E5344AC3-915E-4655-AF0D-98BC878805DC}"
 Const CID_SPD12    = "{0638C49D-BB8B-4CD1-B191-056E8F325736}"
 Const CID_SPD11    = "{81E9830C-5A6B-436A-BEC9-4FB759282DE3}" ' FrontPage
 'Groove_Core - groove.exe
+Const CID_GRV16_64 = "{EEE31981-E2D9-45AE-B134-FD9276C19588}"
+Const CID_GRV16_32 = "{6C26357C-A2D8-4C68-8BC6-A8091BECDA02}"
 Const CID_GRV15_64 = "{AD8AD7F2-98CB-4257-BE7A-05CBCA1354B4}"
 Const CID_GRV15_32 = "{87E86C36-1368-4841-9152-766F31BC46E8}"
 Const CID_GRV14_64 = "{61CD70FF-C6B7-4F6A-8491-5B8B9B0040F8}"
 Const CID_GRV14_32 = "{EFE67578-E52B-410E-9178-9911443DBF5A}"
 Const CID_GRV12    = "{0A048D77-2DE9-4672-ACF7-12429662397D}"
 'Lync_Corelync - lync.exe
+Const CID_LYN16_64 = "{3CFF5AB2-9B16-4A31-BC3F-FAD761D92780}"
+Const CID_LYN16_32 = "{E1AFBCD9-12F0-4FC0-9177-BFD3148AEC74}"
 Const CID_LYN15_64 = "{D5B16A67-9FA6-4B77-AE2A-3B1F49CE9D3B}"
 Const CID_LYN15_32 = "{F8D36F1C-6196-4FFA-94AA-736644D458E3}"
 'Global_OneNote_Core - onenote.exe
+Const CID_ONE16_64 = "{8265A5EF-46C7-4D46-812C-076F2A28F7CB}"
+Const CID_ONE16_32 = "{2A8FA8D7-B728-4792-AC02-463FD7A423BD}"
 Const CID_ONE15_64 = "{74F233A9-A17A-477C-905F-853F5FCDAD40}"
 Const CID_ONE15_32 = "{DACE5A15-C57C-44DE-9AFF-89B4412485AF}"
 Const CID_ONE14_64 = "{9542A6E5-2FAF-4191-B525-6ED00F2D0127}"
@@ -271,6 +312,8 @@ Const CID_ONE14_32 = "{62F8C897-D359-4D8F-9659-CF1E9E3E6B74}"
 Const CID_ONE12    = "{0638C49D-BB8B-4CD1-B191-057E8F325736}"
 Const CID_ONE11    = "{D2C0E18B-C463-4E90-92AC-CA94EBEC26CE}"
 'Global_Office_Core - mso.dll
+Const CID_MSO16_64 = "{625F5772-C1B3-497E-8ABE-7254EDB00506}"
+Const CID_MSO16_32 = "{68477CB0-662A-48FB-AF2E-9573C92869F7}"
 Const CID_MSO15_64 = "{D01398A1-F26F-4545-A441-567F097A57D7}"
 Const CID_MSO15_32 = "{9CC2CF5E-9A2E-41AC-AF95-432890A9659A}"
 Const CID_MSO14_64 = "{E6AC97ED-6651-4C00-A8FE-790DB0485859}"
@@ -278,6 +321,8 @@ Const CID_MSO14_32 = "{398E906A-826B-48DD-9791-549C649CACE5}"
 Const CID_MSO12    = "{0638C49D-BB8B-4CD1-B191-050E8F325736}"
 Const CID_MSO11    = "{A2B280D4-20FB-4720-99F7-10C09FBCE10A}"
 'Global_Outlook_Core - outlook.exe
+Const CID_OL16_64 = "{7C6D92EF-7B45-46E5-8670-819663220E4E}"
+Const CID_OL16_32 = "{2C6C511D-4542-4E0C-95D0-05D4406032F2}"
 Const CID_OL15_64 = "{3A5F96E7-F51D-4942-98DB-3CD037FB39E5}"
 Const CID_OL15_32 = "{E9E5CFFC-AFFE-4F83-A695-7734FA4775B9}"
 Const CID_OL14_64 = "{ECCC8A38-7855-46CA-88FB-3BAA7CD95E56}"
@@ -285,6 +330,8 @@ Const CID_OL14_32 = "{CFF13DD8-6EF2-49EB-B265-E3BFC6501C1D}"
 Const CID_OL12    = "{0638C49D-BB8B-4CD1-B191-055E8F325736}"
 Const CID_OL11    = "{3CE26368-6322-4ABF-B11B-458F5C450D0F}"
 'Global_PowerPoint_Core - powerpnt.exe
+Const CID_PPT16_64 = "{E0A76492-0FD5-4EC2-8570-AE1BAA61DC88}"
+Const CID_PPT16_32 = "{9E73CEA4-29D0-4D16-8FB9-5AB17387C960}"
 Const CID_PPT15_64 = "{8C1B8825-A280-4657-A7B8-8172C553A4C4}"
 Const CID_PPT15_32 = "{258D5292-6DDA-4B39-B301-58405FA16638}"
 Const CID_PPT14_64 = "{EE8D8E0A-D905-401D-9BC3-0D20156D5E30}"
@@ -292,6 +339,8 @@ Const CID_PPT14_32 = "{E72E0D20-0D63-438B-BC71-92AB9F9E8B54}"
 Const CID_PPT12    = "{0638C49D-BB8B-4CD1-B191-053E8F325736}"
 Const CID_PPT11    = "{C86C0B92-63C0-4E35-8605-281275C21F97}"
 'Global_Project_ClientCore - winproj.exe
+Const CID_PRJ16_64 = "{107BCD9A-F1DC-4004-A444-33706FC10058}"
+Const CID_PRJ16_32 = "{0B6EDA1D-4A15-4F88-8B20-EA6528978E4E}"
 Const CID_PRJ15_64 = "{760CE47D-9512-40D9-8C6D-CF232851B4BB}"
 Const CID_PRJ15_32 = "{5296AE31-2F7D-480C-BFDC-CE0797426395}"
 Const CID_PRJ14_64 = "{64A809BD-6EE9-475C-B4E8-95B0D7FF3B97}"
@@ -299,6 +348,8 @@ Const CID_PRJ14_32 = "{51894540-193D-40AE-83F9-D3FC5DB24D91}"
 Const CID_PRJ12    = "{43C3CF66-AA31-476D-B029-6D274E46F86C}"
 Const CID_PRJ11    = "{C33FFB81-6E54-4541-AFF4-D84DC60460F7}"
 'Global_Publisher_Core - mspub.exe
+Const CID_PUB16_64 = "{7ECBF2AA-14AA-4F89-B9A5-C064274CFA83}"
+Const CID_PUB16_32 = "{81DD86EC-5F1C-4DDE-9211-98AF184EAD47}"
 Const CID_PUB15_64 = "{22299AFF-DC4C-45A8-9A8F-651FB6467057}"
 Const CID_PUB15_32 = "{C9C0167D-3FE0-4078-B47E-83272A4B8B04}"
 Const CID_PUB14_64 = "{A716400F-5D5D-45CF-94B4-05B17A98B901}"
@@ -306,6 +357,7 @@ Const CID_PUB14_32 = "{CD0D7B29-89E7-49C5-8EE1-5D858EFF2593}"
 Const CID_PUB12    = "{CD0D7B29-89E7-49C5-8EE1-5D858EFF2593}"
 Const CID_PUB11    = "{0638C49D-BB8B-4CD1-B191-05CE8F325736}"
 'Global_XDocs_Core - infopath.exe
+Const CID_IP16_64 = "{2774AAC0-1433-46BE-993F-8088018C3B09}"
 Const CID_IP15_64 = "{19AF7201-09A2-4C73-AB50-FCEF94CB2BA9}"
 Const CID_IP15_32 = "{3741355B-72CF-4CEE-948E-CC9FBDBB8E7A}"
 Const CID_IP14_64 = "{28B2FBA8-B95F-47CB-8F8F-0885ACDAC69B}"
@@ -313,6 +365,8 @@ Const CID_IP14_32 = "{E3898C62-6EC3-4491-8194-9C88AD716468}"
 Const CID_IP12    = "{0638C49D-BB8B-4CD1-B191-058E8F325736}"
 Const CID_IP11    = "{1A66B512-C4BE-4347-9F0C-8638F8D1E6E4}"
 'Global_Visio_visioexe - visio.exe
+Const CID_VIS16_64 = "{2D4540EC-2C88-4C28-AE88-2614B5460648}"
+Const CID_VIS16_32 = "{A4C55BC1-B94C-4058-B15C-B9D4AE540AD1}"
 Const CID_VIS15_64 = "{7069FF90-1D63-4F85-A2AB-6F0D01C78D83}"
 Const CID_VIS15_32 = "{5D502092-1543-4D9B-89FE-7B4364417CC6}"
 Const CID_VIS14_64 = "{DB2B19E4-F894-47B1-A6F1-9B391A4AE0A8}"
@@ -320,6 +374,8 @@ Const CID_VIS14_32 = "{4371C2B1-3F27-41F5-A849-9987AB91D990}"
 Const CID_VIS12    = "{0638C49D-BB8B-4CD1-B191-05DE8F325736}"
 Const CID_VIS11    = "{7E5F9F34-8EA7-4EA2-ABFB-CA4E742EFFA1}"
 'Global_Word_Core - winword.exe
+Const CID_WD16_64 = "{DC5CCACD-A7AC-4FD3-9F70-9454B5DE5161}"
+Const CID_WD16_32 = "{30CAC893-3CA4-494C-A5E9-A99141352216}"
 Const CID_WD15_64 = "{6FF09BDF-B087-4E23-A9B9-272DBFD64099}"
 Const CID_WD15_32 = "{09D07EFC-505F-4D9C-BFD5-ACE3217F6654}"
 Const CID_WD14_64 = "{C0AC079D-A84B-4CBD-8DBA-F1BB44146899}"
@@ -593,6 +649,7 @@ Const ARRAY_IS                        = 5 ' MSI InstallSource data array id
 
 Const ARRAY_VIRTPROD                  = 6 ' Non MSI based virtualized products
     Const UBOUND_VIRTPROD             = 10
+
 ' Productcode
     arrLogFormat(ARRAY_VIRTPROD, COL_PRODUCTCODE)       = "ProductCode"
 ' Productname
@@ -609,22 +666,21 @@ Const ARRAY_VIRTPROD                  = 6 ' Non MSI based virtualized products
 ' Service Pack Level
     Const VIRTPROD_SPLEVEL          = 5
     arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_SPLEVEL)      = "ServicePack Level"
-' Architecture
-    Const VIRTPROD_BITNESS          = 6
-    arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_BITNESS)      = "Architecture"
 ' (O)SPP License
-    Const VIRTPROD_OSPPLICENSE      = 7
+    Const VIRTPROD_OSPPLICENSE      = 6
     arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_OSPPLICENSE)  = "OSPP License"
 ' (O)SPP License XML
-    Const VIRTPROD_OSPPLICENSEXML   = 8
+    Const VIRTPROD_OSPPLICENSEXML   = 7
     arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_OSPPLICENSEXML) = "OSPP License XML"
 ' Child Packages
-    Const VIRTPROD_CHILDPACKAGES    = 9
+    Const VIRTPROD_CHILDPACKAGES    = 8
     arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_CHILDPACKAGES) = "Child Packages"
 ' KeyComponents
-    Const VIRTPROD_KEYCOMPONENTS    = 10
+    Const VIRTPROD_KEYCOMPONENTS    = 9
     arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_KEYCOMPONENTS) = "KeyComponents"
-
+' Excluded Applications
+    Const VIRTPROD_EXCLUDEAPP       = 10
+    arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_EXCLUDEAPP) = "Excluded Applications"
 
 Const CSV                             = ", "
 Const DSV                             = " - "
@@ -667,10 +723,10 @@ Const ERR_MSPOPENFAILED               = "OpenDatabase failed to open .msp file "
 Const ERR_MSIOPENFAILED               = "OpenDatabase failed to open .msi file "
 Const ERR_BADFILESTATE                = " has unexpected file state(s). "
 Const ERR_FILEVERSIONLOW              = "Review file versions for product "
-Const BPA_GUID                        = "For details on 'GUID' see http://msdn.microsoft.com/en-us/library/Aa368767.aspx"
-Const BPA_PACKAGECODE                 = "For details on 'Package Codes' see http://msdn.microsoft.com/en-us/library/aa370568.aspx"
-Const BPA_PRODUCTCODE                 = "For details on 'Product Codes' see http://msdn.microsoft.com/en-us/library/aa370860.aspx"
-Const BPA_PACKAGECODEMISMATCH         = "A mismatch of the PackageCode will force the Windows Installer to recache the local .msi from the InstallSource. For details on 'Package Code' see http://msdn2.microsoft.com/en-us/library/aa370568.aspx"
+Const BPA_GUID                        = "For details on 'GUID' see https://msdn.microsoft.com/en-us/library/Aa368767.aspx"
+Const BPA_PACKAGECODE                 = "For details on 'Package Codes' see https://msdn.microsoft.com/en-us/library/aa370568.aspx"
+Const BPA_PRODUCTCODE                 = "For details on 'Product Codes' see https://msdn.microsoft.com/en-us/library/aa370860.aspx"
+Const BPA_PACKAGECODEMISMATCH         = "A mismatch of the PackageCode will force the Windows Installer to recache the local .msi from the InstallSource. For details on 'Package Code' see https://msdn.microsoft.com/en-us/library/aa370568.aspx"
 '=======================================================================================================
 
 Main
@@ -680,7 +736,6 @@ Main
 '=======================================================================================================
 Sub Main
     Dim fCheckPreReq, FsoLogFile, FsoXmlLogFile
-    'CheckPreReq needs to be the first thing.
     On Error Resume Next
 ' Check type of scripting host
     fCScript = (UCase(Mid(Wscript.FullName, Len(Wscript.Path) + 2, 1)) = "C")
@@ -767,21 +822,39 @@ Sub Initialize
     Dim iPopup, iInstanceCnt
     Dim fPrompt
     On Error Resume Next
-'Ensure there's only a single instance running of this script
+    'Ensure there's only a single instance running of this script
     iInstanceCnt = 0
     Set oWmiLocal = GetObject("winmgmts:\\.\root\cimv2")
     wscript.sleep 500
     Set Processes = oWmiLocal.ExecQuery("Select * From Win32_Process")
     For Each Process in Processes
-        If LCase(Mid(Process.Name,2,6))="script" Then 
-            If InStr(LCase(Process.CommandLine),"roiscan")>0 AND NOT InStr(Process.CommandLine," UAC") > 0 Then iInstanceCnt=iInstanceCnt+1
+        If LCase(Mid(Process.Name, 2, 6)) = "script" Then 
+            If InStr(LCase(Process.CommandLine), "roiscan") > 0 AND NOT InStr(Process.CommandLine," UAC") > 0 Then iInstanceCnt = iInstanceCnt + 1
         End If
     Next 'Process
-    If iInstanceCnt>1 Then
+    If iInstanceCnt > 1 Then
         If NOT fQuiet Then wscript.echo "Error: Another instance of this script is already running."
         wscript.quit
     End If
    
+    'Other defaults
+    Set dicPatchLevel = CreateObject("Scripting.Dictionary")
+    Set dicScenario = CreateObject("Scripting.Dictionary")
+    Set dicC2RPropV2 = CreateObject("Scripting.Dictionary")
+    Set dicScenarioV2 = CreateObject("Scripting.Dictionary")
+    Set dicKeyComponentsV2 = CreateObject("Scripting.Dictionary")
+    Set dicVirt2Cultures = CreateObject("Scripting.Dictionary")
+    Set dicC2RPropV3 = CreateObject("Scripting.Dictionary")
+    Set dicScenarioV3 = CreateObject("Scripting.Dictionary")
+    Set dicKeyComponentsV3 = CreateObject("Scripting.Dictionary")
+    Set dicVirt3Cultures = CreateObject("Scripting.Dictionary")
+    Set dicProductCodeC2R = CreateObject("Scripting.Dictionary")
+    Set dicArp = CreateObject("Scripting.Dictionary")
+    Set dicPolHKCU = CreateObject("Scripting.Dictionary")
+    Set dicPolHKLM = CreateObject("Scripting.Dictionary")
+    fZipError = False
+    fInitArrProdVer = False
+
     ' log output folder
     If sPathOutputFolder = "" Then sPathOutputFolder = "%TEMP%"
     sPathOutputFolder = oShell.ExpandEnvironmentStrings(sPathOutputFolder)
@@ -836,7 +909,7 @@ Sub Initialize
     GetUserSids("Current") 
 'Init "arrUUSids"
     Redim arrUUSids(-1)
-    GetUserSids("UserUnmanaged") 
+    GetUserSids ("UserUnmanaged") 
 'Init "arrUMSids"
     Redim arrUMSids(-1)
     GetUserSids("UserManaged") 
@@ -847,442 +920,10 @@ Sub Initialize
     InitPLArrays 
     Set dicMspIndex = CreateObject("Scripting.Dictionary")
     bOsppInit = False
-'Other defaults
-    Set dicPatchLevel = CreateObject("Scripting.Dictionary")
-    Set dicScenario = CreateObject("Scripting.Dictionary")
-    fZipError = False
-    fInitArrProdVer = False
 End Sub 'Initialize
 '=======================================================================================================
 'End Of Main Module
 
-'=======================================================================================================
-'Module LicenseState (OSPP)
-'=======================================================================================================
-Sub OsppInit
-    On Error Resume Next
-    Dim oWmiLocal
-    Set oWmiLocal = GetObject("winmgmts:\\.\root\cimv2")
-    If iVersionNt > 601 Then 
-        Set Spp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, KeyManagementServicePort, VLActivationInterval, VLRenewalInterval FROM SoftwareLicensingProduct")
-    End If
-    Set Ospp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, KeyManagementServicePort, VLActivationInterval, VLRenewalInterval FROM OfficeSoftwareProtectionProduct")
-    bOsppInit = True
-End Sub 'OsppInit
-'=======================================================================================================
-
-Function GetLicCnt(iPosMaster, iVersionMajor, ByVal sConfigName, sPossibleSkus, sPossibleSkusFull)
-    On Error Resume Next
-    Dim iLicCnt, iLeft, iCnt
-    Dim sPrefix
-    Dim ProdLic, ConfigProd, prop, ProtectionClass
-    Dim arrLic
-    Dim fMsiMatchesOsppID, fExclude
-    
-    If NOT bOsppInit Then OsppInit
-    If NOT CheckArray(Ospp) AND NOT IsObject(Ospp) Then Exit Function
-    GetPrefixAndConfig iVersionMajor, sConfigName, sPrefix
-    If sConfigName <> "" Then arrLic = Split(sConfigName,";")
-    iLicCnt = 0
-    If CheckArray(arrLic) Then
-        For Each ConfigProd in arrLic
-            iLeft = Len(sPrefix) + Len(ConfigProd)
-            If iVersionMajor > 14 and iVersionNt > 601 Then
-                Set ProtectionClass = Spp
-            Else
-                Set ProtectionClass = Ospp
-            End If
-            Err.Clear
-            For Each ProdLic in ProtectionClass
-                If NOT Err = 0 Then
-                    err.Clear
-                    Exit For
-                End If
-                fMsiMatchesOsppID = False
-                fExclude = False
-                If NOT iPosMaster = -1 Then
-                    If (NOT IsNull (Mid(Prodlic.ProductKeyID, 13, 10))) AND NOT IsNull(arrMaster(iPosMaster, COL_PRODUCTID)) Then _ 
-                        fMsiMatchesOsppID = (Mid(arrMaster(iPosMaster, COL_PRODUCTID), 7, 10) = Mid(Prodlic.ProductKeyID, 13, 10) )
-                End If
-            ' check for exceptions
-                If UCase(ConfigProd) = "VISIO" Then
-                ' SingeleImage Delta Trial productid conflicts with Visio signature
-                    fExclude = InStr(Prodlic.Name, "DeltaTrial") > 0
-                End If 'visio
-            ' add matches to counter and sku-string
-                If (LCase(Left(ProdLic.Name, iLeft)) = LCase(sPrefix & ConfigProd) OR fMsiMatchesOsppID) AND NOT fExclude Then 
-                    iLicCnt = iLicCnt + 1
-                    sPossibleSkus = sPossibleSkus & "; " & ProdLic.Name
-                End If
-            Next 'ProdLic
-        Next 'ConfigProd
-    End If
-    sPossibleSkusFull = sPossibleSkus
-    sPossibleSkus = Replace(sPossibleSkus,sPrefix,"")
-    sPossibleSkus = Replace(sPossibleSkus," edition;",",")
-    GetLicCnt = iLicCnt
-End Function 'GetLicCnt
-'=======================================================================================================
-
-Sub GetPrefixAndConfig(iVersionMajor, sConfigName, sPrefix)
-    On Error Resume Next
-    Select Case iVersionMajor
-    Case 14
-        sPrefix = "Office 14, Office"
-        If sConfigName = "SingleImage" Then sConfigName = "SingleImage;Professional;HomeBusiness;HomeStudent;OneNote;Word;HSOneNote;HSWord;OEM"
-        If sConfigName = "Click2Run" Then sConfigName = "Click2Run;HomeBusiness;HomeStudent;Starter;OEM"
-        If Len(sConfigName) > 2 Then
-            If UCase(Left(sConfigName,3)) = "PRJ" Then sConfigName = "Project"
-            If UCase(Right(sConfigName,1)) = "R" Then sConfigName = Left(sConfigName,(Len(sConfigName)-1))
-        End If
-    Case 15
-        sPrefix = "Office 15, Office"
-        'If sConfigName = "SingleImage" Then sConfigName = "SingleImage;Professional;HomeBusiness;HomeStudent;OneNote;Word;HSOneNote;HSWord;OEM"
-        If Len(sConfigName) > 2 Then
-            If UCase(Left(sConfigName,3)) = "PRJ" Then sConfigName = "Project"
-            If UCase(Right(sConfigName,1)) = "R" Then sConfigName = Left(sConfigName,(Len(sConfigName)-1))
-        End If
-    Case Else
-    End Select
-End Sub
-'=======================================================================================================
-
-Function GetLicenseData(iPosMaster, iVersionMajor, ByVal sConfigName, iLicPos, sPossibleSkusFull)
-    On Error Resume Next
-    Dim arrLicData (14)
-    Dim iPropCnt, iLicCnt, iLeft
-    Dim ProdLic, prop, ConfigProd, ProtectionClass
-    Dim sPrefix, sAllLic, sName
-    Dim arrLic
-    Dim fMsiMatchesOsppID
-    
-    If NOT bOsppInit Then OsppInit
-    iLeft = Len(sConfigName)
-    GetPrefixAndConfig iVersionMajor,sConfigName,sPrefix
-    If sConfigName <> "" Then arrLic = Split(sConfigName,";")
-    For Each ConfigProd in arrLic
-        sAllLic = sAllLic & sPrefix&ConfigProd&";"
-    Next
-    If CheckArray(arrLic) Then
-        iLicCnt = 0
-        If iVersionMajor > 14 and iVersionNt > 601 Then
-            Set ProtectionClass = Spp
-        Else
-            Set ProtectionClass = Ospp
-        End If
-        For Each ProdLic in ProtectionClass
-            fMsiMatchesOsppID = False
-            If NOT iPosMaster = -1 Then
-                If (NOT IsNull (Mid(Prodlic.ProductKeyID, 13, 10))) AND NOT IsNull(arrMaster(iPosMaster, COL_PRODUCTID)) Then _ 
-                    fMsiMatchesOsppID = (Mid(arrMaster(iPosMaster,COL_PRODUCTID), 7, 10) = Mid(Prodlic.ProductKeyID, 13, 10) )
-            End If
-            iLicCnt = iLicCnt + 1
-            For Each ConfigProd in arrLic
-                iLeft = Len(sPrefix) + Len(ConfigProd)
-                If Len(ProdLic.Name)>iLeft -1 Then
-                    If (LCase(Left(ProdLic.Name, iLeft)) = LCase(sPrefix & ConfigProd) OR fMsiMatchesOsppID) AND (iLicCnt > iLicPos) AND InStr(sPossibleSkusFull, Prodlic.Name) > 0 Then 
-                        iLicPos = iLicCnt
-                        arrLicData(OSPP_ID) = ProdLic.ID
-                        arrLicData(OSPP_APPLICATIONID) = ProdLic.ApplicationId
-                        arrLicData(OSPP_PARTIALPRODUCTKEY) = ProdLic.PartialProductKey
-                        arrLicData(OSPP_DESCRIPTION) = ProdLic.Description
-                        arrLicData(OSPP_NAME) = ProdLic.Name
-                        arrLicData(OSPP_LICENSESTATUS) = ProdLic.LicenseStatus
-                        arrLicData(OSPP_LICENSESTATUSREASON) = ProdLic.LicenseStatusReason
-                        arrLicData(OSPP_PRODUCTKEYID) = ProdLic.ProductKeyID
-                        arrLicData(OSPP_GRACEPERIODREMAINING) = ProdLic.GracePeriodRemaining
-                        arrLicData(OSPP_LICENSEFAMILY) = ProdLic.LicenseFamily
-                        arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME) = ProdLic.DiscoveredKeyManagementServiceMachineName
-                        arrLicData(OSPP_KEYMANAGEMENTSERVICEPORT) = ProdLic.KeyManagementServicePort
-                        arrLicData(OSPP_VLACTIVATIONINTERVAL) = ProdLic.VLActivationInterval
-                        arrLicData(OSPP_VLRENEWALINTERVAL) = ProdLic.VLRenewalInterval
-                        GetLicenseData = arrLicData
-                        Exit Function
-                    End If
-                End If
-            Next
-        Next 'ProdLic
-    End If
-    GetLicenseData = arrLicData
-End Function 'GetLicenseData
-'=======================================================================================================
-
-Function GetLicErrDesc(hErr)
-On Error Resume Next
-Select Case "0x"& hErr
-Case "0x0" : GetLicErrDesc = "Success."
-Case "0xC004B001" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B002" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B003" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B004" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B005" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B006" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B007" : GetLicErrDesc = "The activation server reported that the computer could not connect to the activation server."
-Case "0xC004B008" : GetLicErrDesc = "The activation server determined that the computer could not be activated."
-Case "0xC004B009" : GetLicErrDesc = "The activation server determined that the license is invalid."
-Case "0xC004B011" : GetLicErrDesc = "The activation server determined that your computer clock time is not correct. You must correct your clock before you can activate."
-Case "0xC004B100" : GetLicErrDesc = "The activation server determined that the computer could not be activated."
-Case "0xC004C001" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C002" : GetLicErrDesc = "The activation server determined there is a problem with the specified product key."
-Case "0xC004C003" : GetLicErrDesc = "The activation server determined the specified product key has been blocked."
-Case "0xC004C004" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C005" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C006" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C007" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C008" : GetLicErrDesc = "The activation server determined that the specified product key could not be used."
-Case "0xC004C009" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C00A" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C00B" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C00C" : GetLicErrDesc = "The activation server experienced an error."
-Case "0xC004C00D" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C00E" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C00F" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C010" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C011" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C012" : GetLicErrDesc = "The activation server experienced a network error."
-Case "0xC004C013" : GetLicErrDesc = "The activation server experienced an error."
-Case "0xC004C014" : GetLicErrDesc = "The activation server experienced an error."
-Case "0xC004C020" : GetLicErrDesc = "The activation server reported that the Multiple Activation Key has exceeded its limit."
-Case "0xC004C021" : GetLicErrDesc = "The activation server reported that the Multiple Activation Key extension limit has been exceeded."
-Case "0xC004C022" : GetLicErrDesc = "The activation server reported that the re-issuance limit was not found."
-Case "0xC004C023" : GetLicErrDesc = "The activation server reported that the override request was not found."
-Case "0xC004C016" : GetLicErrDesc = "The activation server reported that the specified product key cannot be used for online activation."
-Case "0xC004C017" : GetLicErrDesc = "The activation server determined the specified product key has been blocked for this geographic location."
-Case "0xC004C015" : GetLicErrDesc = "The activation server experienced an error."
-Case "0xC004C050" : GetLicErrDesc = "The activation server experienced a general error."
-Case "0xC004C030" : GetLicErrDesc = "The activation server reported that time based activation attempted before start date."
-Case "0xC004C031" : GetLicErrDesc = "The activation server reported that time based activation attempted after end date."
-Case "0xC004C032" : GetLicErrDesc = "The activation server reported that new time based activation not available."
-Case "0xC004C033" : GetLicErrDesc = "The activation server reported that time based product key not configured for activation."
-Case "0xC004C04F" : GetLicErrDesc = "The activation server reported that no business rules available to activate specified product key."
-Case "0xC004C700" : GetLicErrDesc = "The activation server reported that business rule cound not find required input."
-Case "0xC004C750" : GetLicErrDesc = "The activation server reported that NULL value specified for business property name and Id."
-Case "0xC004C751" : GetLicErrDesc = "The activation server reported that property name specifies unknown property."
-Case "0xC004C752" : GetLicErrDesc = "The activation server reported that property Id specifies unknown property."
-Case "0xC004C755" : GetLicErrDesc = "The activation server reported that it failed to update product key binding."
-Case "0xC004C756" : GetLicErrDesc = "The activation server reported that it failed to insert product key binding."
-Case "0xC004C757" : GetLicErrDesc = "The activation server reported that it failed to delete product key binding."
-Case "0xC004C758" : GetLicErrDesc = "The activation server reported that it failed to process input XML for product key bindings."
-Case "0xC004C75A" : GetLicErrDesc = "The activation server reported that it failed to insert product key property."
-Case "0xC004C75B" : GetLicErrDesc = "The activation server reported that it failed to update product key property."
-Case "0xC004C75C" : GetLicErrDesc = "The activation server reported that it failed to delete product key property."
-Case "0xC004C764" : GetLicErrDesc = "The activation server reported that the product key type is unknown."
-Case "0xC004C770" : GetLicErrDesc = "The activation server reported that the product key type is being used by another user."
-Case "0xC004C780" : GetLicErrDesc = "The activation server reported that it failed to insert product key record."
-Case "0xC004C781" : GetLicErrDesc = "The activation server reported that it failed to update product key record."
-Case "0xC004C401" : GetLicErrDesc = "The Vista Genuine Advantage Service determined that the installation is not genuine."
-Case "0xC004C600" : GetLicErrDesc = "The Vista Genuine Advantage Service determined that the installation is not genuine."
-Case "0xC004C801" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C802" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C803" : GetLicErrDesc = "The activation server determined the specified product key has been revoked."
-Case "0xC004C804" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C805" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C810" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C811" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C812" : GetLicErrDesc = "The activation server determined that the specified product key has exceeded its activation count."
-Case "0xC004C813" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C814" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
-Case "0xC004C815" : GetLicErrDesc = "The activation server determined the license is invalid."
-Case "0xC004C816" : GetLicErrDesc = "The activation server reported that the specified product key cannot be used for online activation."
-Case "0xC004E001" : GetLicErrDesc = "The Software Licensing Service determined that the specified context is invalid."
-Case "0xC004E002" : GetLicErrDesc = "The Software Licensing Service reported that the license store contains inconsistent data."
-Case "0xC004E003" : GetLicErrDesc = "The Software Licensing Service reported that license evaluation failed."
-Case "0xC004E004" : GetLicErrDesc = "The Software Licensing Service reported that the license has not been evaluated."
-Case "0xC004E005" : GetLicErrDesc = "The Software Licensing Service reported that the license is not activated."
-Case "0xC004E006" : GetLicErrDesc = "The Software Licensing Service reported that the license contains invalid data."
-Case "0xC004E007" : GetLicErrDesc = "The Software Licensing Service reported that the license store does not contain the requested license."
-Case "0xC004E008" : GetLicErrDesc = "The Software Licensing Service reported that the license property is invalid."
-Case "0xC004E009" : GetLicErrDesc = "The Software Licensing Service reported that the license store is not initialized."
-Case "0xC004E00A" : GetLicErrDesc = "The Software Licensing Service reported that the license store is already initialized."
-Case "0xC004E00B" : GetLicErrDesc = "The Software Licensing Service reported that the license property is invalid."
-Case "0xC004E00C" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be opened or created."
-Case "0xC004E00D" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be written."
-Case "0xC004E00E" : GetLicErrDesc = "The Software Licensing Service reported that the license store could not read the license file."
-Case "0xC004E00F" : GetLicErrDesc = "The Software Licensing Service reported that the license property is corrupted."
-Case "0xC004E010" : GetLicErrDesc = "The Software Licensing Service reported that the license property is missing."
-Case "0xC004E011" : GetLicErrDesc = "The Software Licensing Service reported that the license store contains an invalid license file."
-Case "0xC004E012" : GetLicErrDesc = "The Software Licensing Service reported that the license store failed to start synchronization properly."
-Case "0xC004E013" : GetLicErrDesc = "The Software Licensing Service reported that the license store failed to synchronize properly."
-Case "0xC004E014" : GetLicErrDesc = "The Software Licensing Service reported that the license property is invalid."
-Case "0xC004E015" : GetLicErrDesc = "The Software Licensing Service reported that license consumption failed."
-Case "0xC004E016" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
-Case "0xC004E017" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
-Case "0xC004E018" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
-Case "0xC004E019" : GetLicErrDesc = "The Software Licensing Service determined that validation of the specified product key failed."
-Case "0xC004E01A" : GetLicErrDesc = "The Software Licensing Service reported that invalid add-on information was found."
-Case "0xC004E01B" : GetLicErrDesc = "The Software Licensing Service reported that not all hardware information could be collected."
-Case "0xC004E01C" : GetLicErrDesc = "This evaluation product key is no longer valid."
-Case "0xC004E01D" : GetLicErrDesc = "The new product key cannot be used on this installation of Windows. Type a different product key. (CD-AB)"
-Case "0xC004E01E" : GetLicErrDesc = "The new product key cannot be used on this installation of Windows. Type a different product key. (AB-AB)"
-Case "0xC004E01F" : GetLicErrDesc = "The new product key cannot be used on this installation of Windows. Type a different product key. (AB-CD)"
-Case "0xC004E020" : GetLicErrDesc = "The Software Licensing Service reported that there is a mismatched between a policy value and information stored in the OtherInfo section."
-Case "0xC004E021" : GetLicErrDesc = "The Software Licensing Service reported that the Genuine information contained in the license is not consistent."
-Case "0xC004E022" : GetLicErrDesc = "The Software Licensing Service reported that the secure store id value in license does not match with the current value."
-Case "0x8004E101" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store file version is invalid."
-Case "0x8004E102" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store contains an invalid descriptor table."
-Case "0x8004E103" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store contains a token with an invalid header/footer."
-Case "0x8004E104" : GetLicErrDesc = "The Software Licensing Service reported that a Token Store token has an invalid name."
-Case "0x8004E105" : GetLicErrDesc = "The Software Licensing Service reported that a Token Store token has an invalid extension."
-Case "0x8004E106" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store contains a duplicate token."
-Case "0x8004E107" : GetLicErrDesc = "The Software Licensing Service reported that a token in the Token Store has a size mismatch."
-Case "0x8004E108" : GetLicErrDesc = "The Software Licensing Service reported that a token in the Token Store contains an invalid hash."
-Case "0x8004E109" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store was unable to read a token."
-Case "0x8004E10A" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store was unable to write a token."
-Case "0x8004E10B" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store attempted an invalid file operation."
-Case "0x8004E10C" : GetLicErrDesc = "The Software Licensing Service reported that there is no active transaction."
-Case "0x8004E10D" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store file header is invalid."
-Case "0x8004E10E" : GetLicErrDesc = "The Software Licensing Service reported that a Token Store token descriptor is invalid."
-Case "0xC004F001" : GetLicErrDesc = "The Software Licensing Service reported an internal error."
-Case "0xC004F002" : GetLicErrDesc = "The Software Licensing Service reported that rights consumption failed."
-Case "0xC004F003" : GetLicErrDesc = "The Software Licensing Service reported that the required license could not be found."
-Case "0xC004F004" : GetLicErrDesc = "The Software Licensing Service reported that the product key does not match the range defined in the license."
-Case "0xC004F005" : GetLicErrDesc = "The Software Licensing Service reported that the product key does not match the product key for the license."
-Case "0xC004F006" : GetLicErrDesc = "The Software Licensing Service reported that the signature file for the license is not available."
-Case "0xC004F007" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be found."
-Case "0xC004F008" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be found."
-Case "0xC004F009" : GetLicErrDesc = "The Software Licensing Service reported that the grace period expired."
-Case "0xC004F00A" : GetLicErrDesc = "The Software Licensing Service reported that the application ID does not match the application ID for the license."
-Case "0xC004F00B" : GetLicErrDesc = "The Software Licensing Service reported that the product identification data is not available."
-Case "0x4004F00C" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid grace period."
-Case "0x4004F00D" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid out of tolerance grace period."
-Case "0xC004F00E" : GetLicErrDesc = "The Software Licensing Service determined that the license could not be used by the current version of the security processor component."
-Case "0xC004F00F" : GetLicErrDesc = "The Software Licensing Service reported that the hardware ID binding is beyond the level of tolerance."
-Case "0xC004F010" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
-Case "0xC004F011" : GetLicErrDesc = "The Software Licensing Service reported that the license file is not installed."
-Case "0xC004F012" : GetLicErrDesc = "The Software Licensing Service reported that the call has failed because the value for the input key was not found."
-Case "0xC004F013" : GetLicErrDesc = "The Software Licensing Service determined that there is no permission to run the software."
-Case "0xC004F014" : GetLicErrDesc = "The Software Licensing Service reported that the product key is not available."
-Case "0xC004F015" : GetLicErrDesc = "The Software Licensing Service reported that the license is not installed."
-Case "0xC004F016" : GetLicErrDesc = "The Software Licensing Service determined that the request is not supported."
-Case "0xC004F017" : GetLicErrDesc = "The Software Licensing Service reported that the license is not installed."
-Case "0xC004F018" : GetLicErrDesc = "The Software Licensing Service reported that the license does not contain valid location data for the activation server."
-Case "0xC004F019" : GetLicErrDesc = "The Software Licensing Service determined that the requested event ID is invalid."
-Case "0xC004F01A" : GetLicErrDesc = "The Software Licensing Service determined that the requested event is not registered with the service."
-Case "0xC004F01B" : GetLicErrDesc = "The Software Licensing Service reported that the event ID is already registered."
-Case "0xC004F01C" : GetLicErrDesc = "The Software Licensing Service reported that the license is not installed."
-Case "0xC004F01D" : GetLicErrDesc = "The Software Licensing Service reported that the verification of the license failed."
-Case "0xC004F01E" : GetLicErrDesc = "The Software Licensing Service determined that the input data type does not match the data type in the license."
-Case "0xC004F01F" : GetLicErrDesc = "The Software Licensing Service determined that the license is invalid."
-Case "0xC004F020" : GetLicErrDesc = "The Software Licensing Service determined that the license package is invalid."
-Case "0xC004F021" : GetLicErrDesc = "The Software Licensing Service reported that the validity period of the license has expired."
-Case "0xC004F022" : GetLicErrDesc = "The Software Licensing Service reported that the license authorization failed."
-Case "0xC004F023" : GetLicErrDesc = "The Software Licensing Service reported that the license is invalid."
-Case "0xC004F024" : GetLicErrDesc = "The Software Licensing Service reported that the license is invalid."
-Case "0xC004F025" : GetLicErrDesc = "The Software Licensing Service reported that the action requires administrator privilege."
-Case "0xC004F026" : GetLicErrDesc = "The Software Licensing Service reported that the required data is not found."
-Case "0xC004F027" : GetLicErrDesc = "The Software Licensing Service reported that the license is tampered."
-Case "0xC004F028" : GetLicErrDesc = "The Software Licensing Service reported that the policy cache is invalid."
-Case "0xC004F029" : GetLicErrDesc = "The Software Licensing Service cannot be started in the current OS mode."
-Case "0xC004F02A" : GetLicErrDesc = "The Software Licensing Service reported that the license is invalid."
-Case "0xC004F02C" : GetLicErrDesc = "The Software Licensing Service reported that the format for the offline activation data is incorrect."
-Case "0xC004F02D" : GetLicErrDesc = "The Software Licensing Service determined that the version of the offline Confirmation ID (CID) is incorrect."
-Case "0xC004F02E" : GetLicErrDesc = "The Software Licensing Service determined that the version of the offline Confirmation ID (CID) is not supported."
-Case "0xC004F02F" : GetLicErrDesc = "The Software Licensing Service reported that the length of the offline Confirmation ID (CID) is incorrect."
-Case "0xC004F030" : GetLicErrDesc = "The Software Licensing Service determined that the Installation ID (IID) or the Confirmation ID (CID) could not been saved."
-Case "0xC004F031" : GetLicErrDesc = "The Installation ID (IID) and the Confirmation ID (CID) do not match. Please confirm the IID and reacquire a new CID if necessary."
-Case "0xC004F032" : GetLicErrDesc = "The Software Licensing Service determined that the binding data is invalid."
-Case "0xC004F033" : GetLicErrDesc = "The Software Licensing Service reported that the product key is not allowed to be installed. Please see the eventlog for details."
-Case "0xC004F034" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be found or was invalid."
-Case "0xC004F035" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated with a Volume license product key. Volume-licensed systems require upgrading from a qualifying operating system. Please contact your system administrator or use a different type of key."
-Case "0xC004F038" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The count reported by your Key Management Service (KMS) is insufficient. Please contact your system administrator."
-Case "0xC004F039" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated.  The Key Management Service (KMS) is not enabled."
-Case "0x4004F040" : GetLicErrDesc = "The Software Licensing Service reported that the computer was activated but the owner should verify the Product Use Rights."
-Case "0xC004F041" : GetLicErrDesc = "The Software Licensing Service determined that the Key Management Service (KMS) is not activated. KMS needs to be activated. Please contact system administrator."
-Case "0xC004F042" : GetLicErrDesc = "The Software Licensing Service determined that the specified Key Management Service (KMS) cannot be used."
-Case "0xC004F047" : GetLicErrDesc = "The Software Licensing Service reported that the proxy policy has not been updated."
-Case "0xC004F04D" : GetLicErrDesc = "The Software Licensing Service determined that the Installation ID (IID) or the Confirmation ID (CID) is invalid."
-Case "0xC004F04F" : GetLicErrDesc = "The Software Licensing Service reported that license management information was not found in the licenses."
-Case "0xC004F050" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
-Case "0xC004F051" : GetLicErrDesc = "The Software Licensing Service reported that the product key is blocked."
-Case "0xC004F052" : GetLicErrDesc = "The Software Licensing Service reported that the licenses contain duplicated properties."
-Case "0xC004F053" : GetLicErrDesc = "The Software Licensing Service determined that the license is invalid. The license contains an override policy that is not configured properly."
-Case "0xC004F054" : GetLicErrDesc = "The Software Licensing Service reported that license management information has duplicated data."
-Case "0xC004F055" : GetLicErrDesc = "The Software Licensing Service reported that the base SKU is not available."
-Case "0xC004F056" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated using the Key Management Service (KMS)."
-Case "0xC004F057" : GetLicErrDesc = "The Software Licensing Service reported that the computer BIOS is missing a required license."
-Case "0xC004F058" : GetLicErrDesc = "The Software Licensing Service reported that the computer BIOS is missing a required license."
-Case "0xC004F059" : GetLicErrDesc = "The Software Licensing Service reported that a license in the computer BIOS is invalid."
-Case "0xC004F060" : GetLicErrDesc = "The Software Licensing Service determined that the version of the license package is invalid."
-Case "0xC004F061" : GetLicErrDesc = "The Software Licensing Service determined that this specified product key can only be used for upgrading, not for clean installations."
-Case "0xC004F062" : GetLicErrDesc = "The Software Licensing Service reported that a required license could not be found."
-Case "0xC004F063" : GetLicErrDesc = "The Software Licensing Service reported that the computer BIOS is missing a required license."
-Case "0xC004F064" : GetLicErrDesc = "The Software Licensing Service reported that the non-genuine grace period expired."
-Case "0x4004F065" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid non-genuine grace period."
-Case "0xC004F066" : GetLicErrDesc = "The Software Licensing Service reported that the genuine information property can not be set before dependent property been set."
-Case "0xC004F067" : GetLicErrDesc = "The Software Licensing Service reported that the non-genuine grace period expired (type 2)."
-Case "0x4004F068" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid non-genuine grace period (type 2)."
-Case "0xC004F069" : GetLicErrDesc = "The Software Licensing Service reported that the product SKU is not found."
-Case "0xC004F06A" : GetLicErrDesc = "The Software Licensing Service reported that the requested operation is not allowed."
-Case "0xC004F06B" : GetLicErrDesc = "The Software Licensing Service determined that it is running in a virtual machine. The Key Management Service (KMS) is not supported in this mode."
-Case "0xC004F06C" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The Key Management Service (KMS) determined that the request timestamp is invalid."
-Case "0xC004F071" : GetLicErrDesc = "The Software Licensing Service reported that the plug-in manifest file is incorrect."
-Case "0xC004F072" : GetLicErrDesc = "The Software Licensing Service reported that the license policies for fast query could not be found."
-Case "0xC004F073" : GetLicErrDesc = "The Software Licensing Service reported that the license policies for fast query have not been loaded."
-Case "0xC004F074" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. No Key Management Service (KMS) could be contacted. Please see the Application Event Log for additional information."
-Case "0xC004F075" : GetLicErrDesc = "The Software Licensing Service reported that the operation cannot be completed because the service is stopping."
-Case "0xC004F076" : GetLicErrDesc = "The Software Licensing Service reported that the requested plug-in cannot be found."
-Case "0xC004F077" : GetLicErrDesc = "The Software Licensing Service determined incompatible version of authentication data."
-Case "0xC004F078" : GetLicErrDesc = "The Software Licensing Service reported that the key is mismatched."
-Case "0xC004F079" : GetLicErrDesc = "The Software Licensing Service reported that the authentication data is not set."
-Case "0xC004F07A" : GetLicErrDesc = "The Software Licensing Service reported that the verification could not be done."
-Case "0xC004F07B" : GetLicErrDesc = "The requested operation is unavailable while the Software Licensing Service is running."
-Case "0xC004F07C" : GetLicErrDesc = "The Software Licensing Service determined that the version of the computer BIOS is invalid."
-Case "0xC004F200" : GetLicErrDesc = "The Software Licensing Service reported that current state is not genuine."
-Case "0xC004F301" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The token-based activation challenge has expired."
-Case "0xC004F302" : GetLicErrDesc = "The Software Licensing Service reported that Silent Activation failed. The Software Licensing Service reported that there are no certificates found in the system that could activate the product without user interaction."
-Case "0xC004F303" : GetLicErrDesc = "The Software Licensing Service reported that the certificate chain could not be built or failed validation."
-Case "0xC004F304" : GetLicErrDesc = "The Software Licensing Service reported that required license could not be found."
-Case "0xC004F305" : GetLicErrDesc = "The Software Licensing Service reported that there are no certificates found in the system that could activate the product."
-Case "0xC004F306" : GetLicErrDesc = "The Software Licensing Service reported that this software edition does not support token-based activation."
-Case "0xC004F307" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. Activation data is invalid."
-Case "0xC004F308" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. Activation data is tampered."
-Case "0xC004F309" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. Activation challenge and response do not match."
-Case "0xC004F30A" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate does not match the conditions in the license."
-Case "0xC004F30B" : GetLicErrDesc = "The Software Licensing Service reported that the inserted smartcard could not be used to activate the product."
-Case "0xC004F30C" : GetLicErrDesc = "The Software Licensing Service reported that the token-based activation license content is invalid."
-Case "0xC004F30D" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The thumbprint is invalid."
-Case "0xC004F30E" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The thumbprint does not match any certificate."
-Case "0xC004F30F" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate does not match the criteria specified in the issuance license."
-Case "0xC004F310" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate does not match the trust point identifier (TPID) specified in the issuance license."
-Case "0xC004F311" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. A soft token cannot be used for activation."
-Case "0xC004F312" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate cannot be used because its private key is exportable."
-Case "0xC004F313" : GetLicErrDesc = "The Software Licensing Service reported that the CNG encryption library could not be loaded.  The current certificate may not be available on this version of Windows."
-Case "0xC004FC03" : GetLicErrDesc = "A networking problem has occurred while activating your copy of Windows."
-Case "0x4004FC04" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the timebased validity period."
-Case "0x4004FC05" : GetLicErrDesc = "The Software Licensing Service reported that the application has a perpetual grace period."
-Case "0x4004FC06" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid extended grace period."
-Case "0xC004FC07" : GetLicErrDesc = "The Software Licensing Service reported that the validity period expired."
-Case "0xC004FE00" : GetLicErrDesc = "The Software Licensing Service reported that activation is required to recover from tampering of SL Service trusted store."
-Case "0xC004D101" : GetLicErrDesc = "The security processor reported an initialization error."
-Case "0x8004D102" : GetLicErrDesc = "The security processor reported that the machine time is inconsistent with the trusted time."
-Case "0xC004D103" : GetLicErrDesc = "The security processor reported that an error has occurred."
-Case "0xC004D104" : GetLicErrDesc = "The security processor reported that invalid data was used."
-Case "0xC004D105" : GetLicErrDesc = "The security processor reported that the value already exists."
-Case "0xC004D107" : GetLicErrDesc = "The security processor reported that an insufficient buffer was used."
-Case "0xC004D108" : GetLicErrDesc = "The security processor reported that invalid data was used."
-Case "0xC004D109" : GetLicErrDesc = "The security processor reported that an invalid call was made."
-Case "0xC004D10A" : GetLicErrDesc = "The security processor reported a version mismatch error."
-Case "0x8004D10B" : GetLicErrDesc = "The security processor cannot operate while a debugger is attached."
-Case "0xC004D301" : GetLicErrDesc = "The security processor reported that the trusted data store was tampered."
-Case "0xC004D302" : GetLicErrDesc = "The security processor reported that the trusted data store was rearmed."
-Case "0xC004D303" : GetLicErrDesc = "The security processor reported that the trusted store has been recreated."
-Case "0xC004D304" : GetLicErrDesc = "The security processor reported that entry key was not found in the trusted data store."
-Case "0xC004D305" : GetLicErrDesc = "The security processor reported that the entry key already exists in the trusted data store."
-Case "0xC004D306" : GetLicErrDesc = "The security processor reported that the entry key is too big to fit in the trusted data store."
-Case "0xC004D307" : GetLicErrDesc = "The security processor reported that the maximum allowed number of re-arms has been exceeded.  You must re-install the OS before trying to re-arm again."
-Case "0xC004D308" : GetLicErrDesc = "The security processor has reported that entry data size is too big to fit in the trusted data store."
-Case "0xC004D309" : GetLicErrDesc = "The security processor has reported that the machine has gone out of hardware tolerance."
-Case "0xC004D30A" : GetLicErrDesc = "The security processor has reported that the secure timer already exists."
-Case "0xC004D30B" : GetLicErrDesc = "The security processor has reported that the secure timer was not found."
-Case "0xC004D30C" : GetLicErrDesc = "The security processor has reported that the secure timer has expired."
-Case "0xC004D30D" : GetLicErrDesc = "The security processor has reported that the secure timer name is too long."
-Case "0xC004D30E" : GetLicErrDesc = "The security processor reported that the trusted data store is full."
-Case "0xC004D401" : GetLicErrDesc = "The security processor reported a system file mismatch error."
-Case "0xC004D402" : GetLicErrDesc = "The security processor reported a system file mismatch error."
-Case "0xC004D501" : GetLicErrDesc = "The security processor reported an error with the kernel data."
-Case Else : GetLicErrDesc = ""
-End Select
-End Function 'GetLicErrDesc
 '=======================================================================================================
 'Module FileInventory
 '=======================================================================================================
@@ -1338,7 +979,7 @@ Sub FileInventory
 ' Loop all products
     If fCScript AND NOT fQuiet Then wscript.echo vbTab & "File version scan"
     For iPosMaster = 0 To UBound(arrMaster)
-        If (arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) OR fListNonOfficeProducts) AND (arrMaster(iPosMaster,COL_CONTEXT)=MSIINSTALLCONTEXT_MACHINE) Then
+        If (arrMaster(iPosMaster, COL_ISOFFICEPRODUCT) OR fListNonOfficeProducts) AND (arrMaster(iPosMaster, COL_CONTEXT) = MSIINSTALLCONTEXT_MACHINE) Then
         ' Cache ProductCode
             sProductCode = "" : sProductCode = arrMaster(iPosMaster,COL_PRODUCTCODE)
             If fCScript AND NOT fQuiet Then wscript.echo vbTab & sProductCode 
@@ -2573,43 +2214,40 @@ End Sub 'ReadMsiInstallSources
 
 'Return True/False and the LIS source path as sSource
 'Empty string for sProductCode forces to identify the DownloadCode from Setup.xml
-Function GetDeliveryResiliencySource (sProductCode,iPosMaster,sSource)
+Function GetDeliveryResiliencySource (sProductCode, iPosMaster, sSource)
     On Error Resume Next
     
-    Dim arrSources,arrDownloadCodeKeys
+    Dim arrSources, arrDownloadCodeKeys
     Dim dicDownloadCode
-    Dim sSubKeyName,sValue,key,sku,sSkuName,sText,sDownloadCode,sTmpDownloadCode,source
-    Dim arrKeys,arrSku
-    Dim iVersionMajor,iSrc
+    Dim sSubKeyName, sValue, key, sku, sSkuName, sText, sDownloadCode, sTmpDownloadCode, source
+    Dim arrKeys, arrSku
+    Dim iVersionMajor, iSrc
     Dim fFound
 
-    GetDeliveryResiliencySource=False
+    GetDeliveryResiliencySource = False
     sSource = Empty
     iVersionMajor = GetVersionMajor(sProductCode)
     Set dicDownloadCode = CreateObject("Scripting.Dictionary")
     
-    Select Case iVersionMajor
-    'Case 14
-    Case 12,14
+    If iVersionMajor > 11 Then
         'Note: ProductCode doesn't work consistently for this logic
         '      To locate the Setup.xml requires additional logic so the tweak here is to use the 
         '      original source location to identify the DownloadCode
-        sText=arrIS(iPosMaster,IS_ORIGINALSOURCE)
-        If InStr(source,"{")>0 Then sDownloadCode=Mid(sText,InStr(sText,"{"),40) Else sDownloadCode=sProductCode
-        dicDownloadCode.Add sDownloadCode,sProductCode
+        sText = arrIS(iPosMaster, IS_ORIGINALSOURCE)
+        If InStr(source, "{") > 0 Then sDownloadCode = Mid(sText, InStr(sText, "{"), 40) Else sDownloadCode = sProductCode
+        dicDownloadCode.Add sDownloadCode, sProductCode
         
         'Find the additional download locations
         'Check if more than one sources are registered
-        If InStr(arrIS(iPosMaster,IS_ADDITIONALSOURCES),"||")>0 Then
-            arrSources = Split(arrIS(iPosMaster,IS_ADDITIONALSOURCES)," || ")
+        If InStr(arrIS(iPosMaster, IS_ADDITIONALSOURCES), "||") > 0 Then
+            arrSources = Split(arrIS(iPosMaster, IS_ADDITIONALSOURCES), " || ")
             For Each source in arrSources
-                If InStr(source,"{")>0 Then
-                    sTmpDownloadCode=Mid(source,InStr(source,"{"),40)
-                    If Not dicDownloadCode.Exists(sTmpDownloadCode) Then dicDownloadCode.Add sTmpDownloadCode,sProductCode
+                If InStr(source, "{") > 0 Then
+                    sTmpDownloadCode = Mid(source, InStr(source, "{"), 40)
+                    If Not dicDownloadCode.Exists(sTmpDownloadCode) Then dicDownloadCode.Add sTmpDownloadCode, sProductCode
                 End If 'InStr
             Next'
         End If 'InStr
-        
         
         
         arrDownloadCodeKeys = dicDownloadCode.Keys
@@ -2620,24 +2258,24 @@ Function GetDeliveryResiliencySource (sProductCode,iPosMaster,sSource)
             If RegEnumKey(HKLM,sSubKeyName,arrKeys) Then
                 For Each key in arrKeys
                     fFound = False
-                    If Len(key)>37 Then
-                        fFound = (UCase(Left(key,38))=sDownloadCode) OR (UCase(key)=sDownloadCode)
+                    If Len(key) > 37 Then
+                        fFound = (UCase(Left(key, 38)) = sDownloadCode) OR (UCase(key) = sDownloadCode)
                     Else
-                        fFound = (UCase(key)=sDownloadCode)
+                        fFound = (UCase(key) = sDownloadCode)
                     End If 'Len > 37
                     If fFound Then
                         'Found the Delivery reference
                         'Enum the 'Sources' subkey
-                        sSubKeyName=sSubKeyName&key&"\Sources\"
+                        sSubKeyName = sSubKeyName & key & "\Sources\"
                         If RegEnumKey(HKLM,sSubKeyName,arrSku) Then
                             For Each sku in arrSku
-                                If RegReadStringValue(HKLM,sSubKeyName&sku,"Path",sValue) Then
-                                    sSkuName=""
-                                    sSkuName=" (" & Left(sku,InStr(sku,"(")-1) &")"
+                                If RegReadStringValue(HKLM, sSubKeyName & sku, "Path", sValue) Then
+                                    sSkuName = ""
+                                    sSkuName = " (" & Left(sku, InStr(sku,"(") - 1) &")"
                                     If IsEmpty(sSource) Then
                                         sSource = sValue & sSkuName
                                     Else
-                                        sSource = sSource&" || "&sValue&sSkuName
+                                        sSource = sSource & " || " & sValue & sSkuName
                                     End If 'IsEmpty
                                 End If 'RegReadStringValue
                             Next 'sku
@@ -2650,17 +2288,21 @@ Function GetDeliveryResiliencySource (sProductCode,iPosMaster,sSource)
             End If 'RegEnumKey
         Next 'iSrc
         
-    Case 11
+    ElseIf iVersionMajor = 11 Then
         'Get the DownloadCode
-        sSubKeyName="SOFTWARE\Microsoft\Office\11.0\Delivery\"&sProductCode&"\"
-        If RegReadStringValue(HKLM,sSubKeyName,"DownloadCode",sDownloadCode) Then
-            sSubKeyName="SOFTWARE\Microsoft\Office\Delivery\SourceEngine\Downloads\"&sDownloadCode&"\Sources\"&Mid(sProductCode,2,36)&"\"
-            If RegReadStringValue(HKLM,sSubKeyName,"Path",sValue) Then sSource = sValue
+        sSubKeyName = "SOFTWARE\Microsoft\Office\11.0\Delivery\" & sProductCode&"\"
+        If RegReadStringValue(HKLM,sSubKeyName, "DownloadCode", sDownloadCode) Then
+            sSubKeyName = "SOFTWARE\Microsoft\Office\Delivery\SourceEngine\Downloads\" & sDownloadCode & "\Sources\" & Mid(sProductCode, 2, 36) & "\"
+            If RegReadStringValue(HKLM, sSubKeyName, "Path", sValue) Then sSource = sValue
         End If 
-    Case Else 'Does not have LIS
-    End Select
+    End If 'iVersionMajor
     
-    If Not IsEmpty(sSource) Then GetDeliveryResiliencySource=True
+    If Not IsEmpty(sSource) Then
+        GetDeliveryResiliencySource = True
+        WriteDebug sActiveSub, "Delivery resiliency source for " & sProductCode & " returned 'TRUE': " & sSource
+    Else
+        WriteDebug sActiveSub, "Delivery resiliency source for " & sProductCode & " returned 'FALSE'"
+    End If
 
 End Function 'GetDeliveryResiliencySource
 
@@ -2674,10 +2316,9 @@ End Function 'GetDeliveryResiliencySource
 'Gather additional properties for the product
 'Add them to master array
 Sub ProductProperties
-    Dim sActiveSub, sErrHnd,sProdId,n
     Dim prod,MsiDb
     Dim iPosMaster,iVersionMajor,iContext,iProd
-    Dim sProductCode,sSpLevel,sCachedMsi,sSid,sComp,sComp2,sPath,sRef
+    Dim sProductCode,sSpLevel,sCachedMsi,sSid,sComp,sComp2,sPath,sRef,sProdId,n
     Dim fVer,fCx
     Dim arrCx,arrCxN,arrCxErr,arrKeys,arrTypes,arrNames
     On Error Resume Next
@@ -2966,7 +2607,6 @@ Function GetUpgradeCode (MsiDb)
     Set Record = qView.Fetch()
     If NOT Err = 0 Then Exit Function
     GetUpgradeCode = Record.StringData(1)
-    WriteDebug sActiveSub,"Upgradecode: " &  Record.StringData(1)
 End Function 'GetPackageCode
 '=======================================================================================================
 
@@ -3081,6 +2721,10 @@ Function GetProductId(sProductCode,iPosMaster)
         sProductId = GetRegProductId(GetCompressedGuid(sProductCode),iPosMaster)
         Exit Function
     End If
+    If arrMaster(iPosMaster,COL_CONTEXT) = MSIINSTALLCONTEXT_C2RV3 Then
+        sProductId = GetRegProductId(GetCompressedGuid(sProductCode),iPosMaster)
+        Exit Function
+    End If
 
     'For WI >= 3.x we can use 'InstallProperty' for earlier versions we need to stick to 'ProductInfo'
     If iWiVersionMajor > 2 Then
@@ -3106,9 +2750,9 @@ Function GetProductId(sProductCode,iPosMaster)
 End Function 'GetProductId
 '=======================================================================================================
 
-Function GetRegProductId (sProductCodeCompressed,iPosMaster)
+Function GetRegProductId (sProductCodeCompressed, iPosMaster)
     Dim hDefKey
-    Dim sSubKeyName,sValue,sSid,sName
+    Dim sSubKeyName, sValue, sSid, sName
     Dim iContext
     On Error Resume Next
 
@@ -3136,6 +2780,10 @@ Function GetProductVersion (sProductCode,iContext,sSid)
     On Error Resume Next
 
     If iContext = MSIINSTALLCONTEXT_C2RV2 Then
+         GetProductVersion = GetRegProductVersion(sProductCode,iContext,sSid)
+         Exit Function
+    End If
+    If iContext = MSIINSTALLCONTEXT_C2RV3 Then
          GetProductVersion = GetRegProductVersion(sProductCode,iContext,sSid)
          Exit Function
     End If
@@ -3176,6 +2824,7 @@ Function OVersionToSpLevel (sProductCode,iVersionMajor,sProductVersion)
     On Error Resume Next
     
     'SKU identifier constants for SP level detection
+    Const O16_EXCEPTION = ""
     Const O15_EXCEPTION = ""
     Const O14_EXCEPTION = "007A,007B,007C,007D,007F,2005"
 '#Devonly   O12_Server = "1014,1015,104B,104E,1080,1088,10D7,10D8,10EB,10F5,10F6,10F7,10F8,10FB,10FC,10FD,1103,1104,110D,1105,1110,1121,1122"    
@@ -3338,7 +2987,7 @@ Function OVersionToSpLevel (sProductCode,iVersionMajor,sProductVersion)
 
     Case 15
         'Sku ProductID is 4 digits starting at pos 11
-        sSku = Mid(sProductCode,11,4)
+        sSku = Mid(sProductCode, 11, 4)
         If InStr(O15_EXCEPTION, sSku) > 0 Then
             For iExptnCnt = 1 To UBound(arrProdVer15, 1)
                 If InStr(arrProdVer15(iExptnCnt, 0), sSku) > 0 Then Exit For
@@ -3364,7 +3013,36 @@ Function OVersionToSpLevel (sProductCode,iVersionMajor,sProductVersion)
             'Did not find the SP level yet. Retry with core build numbers
             iExptnCnt = 0
         Next 'iRetry
-    Case Else
+        
+        Case 16
+        'Sku ProductID is 4 digits starting at pos 11
+        sSku = Mid(sProductCode, 11, 4)
+        If InStr(O16_EXCEPTION, sSku) > 0 Then
+            For iExptnCnt = 1 To UBound(arrProdVer16, 1)
+                If InStr(arrProdVer16(iExptnCnt, 0), sSku) > 0 Then Exit For
+            Next 'iExptnCnt
+        Else
+            iExptnCnt = 0
+        End If 'InStr(O16_Exception, sSku) > 0
+        
+        For iRetry = 0 To 1
+            For iSpCnt = 1 To UBound(arrProdVer16, 2)
+                If Left(sProductVersion, 10) = Left(arrProdVer16(iExptnCnt, iSpCnt), 10) Then 
+                    'Special release references are noted within same field with a "," separator
+                    If InStr(arrProdVer16(iExptnCnt, iSpCnt), ",") > 0 Then
+                        OVersionToSpLevel = Mid(arrProdVer16(iExptnCnt, iSpCnt), InStr(arrProdVer16(iExptnCnt, iSpCnt), ",") + 1, Len(arrProdVer16(iExptnCnt, iSpCnt)))
+                        Exit Function
+                    Else
+                        iLevel = iSpCnt
+                        Exit For
+                    End If
+                End If
+            Next 'iSpCnt
+            If iLevel > 0 Then Exit For
+            'Did not find the SP level yet. Retry with core build numbers
+            iExptnCnt = 0
+        Next 'iRetry
+Case Else
     End Select
         
     Select Case iLevel
@@ -3372,7 +3050,7 @@ Function OVersionToSpLevel (sProductCode,iVersionMajor,sProductVersion)
     Case 2 : sSpLevel = "SP1"
     Case 3 : sSpLevel = "SP2"
     Case 4 : sSpLevel = "SP3"
-    Case Else : sSpLevel = "?"
+    Case Else : sSpLevel = ""
     End Select
 
     OVersionToSpLevel = sSpLevel
@@ -3384,8 +3062,12 @@ End Function 'OVersionToSpLevel
 Sub InitProdVerArrays
     On Error Resume Next
 
+' O16 Products -> KB ?
+    ReDim arrProdVer16(0,0) 'n,1=RTM
+    arrProdVer16(0,0)="" 
+
 ' 2013 Products -> KB 2786054
-    ReDim arrProdVer15(0,18) 'n,1=RTM
+    ReDim arrProdVer15(0,44) 'n,1=RTM
     arrProdVer15(0,0)="" : arrProdVer15(0,1) = "15.0.4420.1017" : arrProdVer15(0,2) = "15.0.4569.1507"
     arrProdVer15(0,3) = "15.0.4454.1004,2013/01" : arrProdVer15(0,4) = "15.0.4454.1511,2013/02" 
     arrProdVer15(0,5) = "15.0.4481.1005,2013/03" : arrProdVer15(0,6) = "15.0.4481.1510,2013/04" : arrProdVer15(0,7) = "15.0.4505.1006,2013/05" 
@@ -3393,6 +3075,13 @@ Sub InitProdVerArrays
     arrProdVer15(0,10) = "15.0.4535.1004,2013/09" : arrProdVer15(0,11) = "15.0.4535.1511,2013/10" : arrProdVer15(0,12) = "15.0.4551.1005,2013/11"
     arrProdVer15(0,13) = "15.0.4551.1011,2013/12" : arrProdVer15(0,14) = "15.0.4551.1512,2014/01"
     arrProdVer15(0,15) = "15.0.4569.1000,SP1_Preview" : arrProdVer15(0,16) = "15.0.4569.1001,SP1_Preview" : arrProdVer15(0,17) = "15.0.4569.1002,SP1_Preview" : arrProdVer15(0,18) = "15.0.4569.1003,SP1_Preview"
+    arrProdVer15(0,19) = "15.0.4569.1508,2014/03" : arrProdVer15(0,20) = "15.0.4605.1003,2014/04" : arrProdVer15(0,21) = "15.0.4615.1002,2014/05" : arrProdVer15(0,22) = "15.0.4623.1003,2014/06"
+    arrProdVer15(0,23) = "15.0.4631.1002,2014/07" : arrProdVer15(0,24) = "15.0.4631.1004,2014/07+" : arrProdVer15(0,25) = "15.0.4641.1002,2014/08" : arrProdVer15(0,26) = "15.0.4641.1003,2014/08+"
+    arrProdVer15(0,27) = "15.0.4649.1001,2014/09" : arrProdVer15(0,28) = "15.0.4649.1001,2014/09+" : arrProdVer15(0,29) = "15.0.4649.1004,2014/09++" : arrProdVer15(0,30) = "15.0.4659.1001,2014/10"
+    arrProdVer15(0,31) = "15.0.4667.1002,2014/11" : arrProdVer15(0,32) = "15.0.4675.1002,2014/12" : arrProdVer15(0,33) = "15.0.4675.1003,2014/12+" : arrProdVer15(0,34) = "15.0.4693.1001,2015/02"
+    arrProdVer15(0,35) = "15.0.4693.1002,2015/02+" : arrProdVer15(0,36) = "15.0.4701.1002,2015/03" : arrProdVer15(0,37) = "15.0.4711.1002,2015/04" : arrProdVer15(0,38) = "15.0.4711.1003,2015/04+"
+    arrProdVer15(0,39) = "15.0.4719.1002,2015/05" : arrProdVer15(0,40) = "15.0.4727.1002,2015/06" : arrProdVer15(0,41) = "15.0.4727.1003,2015/06+" : arrProdVer15(0,42) = "15.0.4737.1003,2015/07"
+    arrProdVer15(0,43) = "15.0.4745.1001,2015/08" : arrProdVer15(0,44) = "15.0.4745.1001,2015/08+"
 
 ' 2010 Products -> KB 2186281
     ReDim arrProdVer14(6,3) 'n,1=RTM; n,2=SP1
@@ -4312,7 +4001,7 @@ Sub FindArpParents
     Dim n, i, j, iMaxVal, iArpCnt, iPosMaster, iLoop
     Dim bNoSysComponent, bOConfigEntry, fFoundConfigProductCode, fUninstallString
     Dim hDefKey
-    Dim sSubKeyName, sCurKey, sName, sValue, sNames, sArpProductName, sRegArp
+    Dim sSubKeyName, sCurKey, sName, sValue, sNames, sArpProductName, sRegArp, sMondo
     Dim arrKeys, arrValues, arrTmpArp, arrNames, arrTypes
     Dim dicArpTmp
     Dim tModulStart, tModulEnd
@@ -4321,51 +4010,50 @@ Sub FindArpParents
     iLoop = 0 : iMaxVal = 0: iArpCnt = 0 : Redim arrTmpArp(-1)
     Set dicArpTmp = CreateObject("Scripting.Dictionary")
     
-    While iLoop < 2
-        iLoop = iLoop + 1
-        hDefKey = HKEY_LOCAL_MACHINE
-        sRegArp = REG_ARP
-        If iLoop = 2 Then sRegArp = REG_C2RVIRT_HKLM & REG_ARP
-        sSubKeyName = sRegArp
-        Set dicMissingChild = CreateObject("Scripting.Dictionary")
-        If RegEnumKey (hDefKey,sSubKeyName,arrKeys) Then
-            For Each ArpProd in arrKeys
-                sCurKey = sSubKeyName & ArpProd & "\"
-                bNoSysComponent = True
-                bOConfigEntry = False
-                sNames = "" : Redim arrNames(-1) : Redim arrTypes(-1)
-                If RegEnumValues(hDefKey,sCurKey,arrNames,arrTypes) Then sNames = Join(arrNames)
-                If InStr(sNames,"PackageIds") OR InStr(sNames,"PackageRefs") OR UCase(Left(ArpProd, 9)) = "OFFICE14."  OR UCase(Left(ArpProd, 9)) = "OFFICE15." Then bOConfigEntry = True
+    hDefKey = HKEY_LOCAL_MACHINE
+    sRegArp = REG_ARP
+    sSubKeyName = sRegArp
+    Set dicMissingChild = CreateObject("Scripting.Dictionary")
+    'If RegEnumKey (hDefKey,sSubKeyName,arrKeys) Then
+    For Each ArpProd in dicArp.Keys
+        sCurKey = dicArp.Item(ArpProd) & "\"
+        bNoSysComponent = True
+        bOConfigEntry = False
+        sNames = "" : Redim arrNames(-1) : Redim arrTypes(-1)
+        If RegEnumValues(hDefKey,sCurKey,arrNames,arrTypes) Then sNames = Join(arrNames)
+        If InStr(sNames,"PackageIds") OR _
+           InStr(sNames,"PackageRefs") OR _
+           UCase(Left(ArpProd, 9)) = "OFFICE14." OR _
+           UCase(Left(ArpProd, 9)) = "OFFICE15." OR _
+           UCase(Left(ArpProd, 9)) = "OFFICE16." Then bOConfigEntry = True
             
-                If bOConfigEntry Then 
-                    sName = "SystemComponent"
-                    'If RegDWORD 'SystemComponent' = 1 then it's not showing up in ARP
-                    If RegReadDWordValue(hDefKey,sCurKey,sName,sValue) Then
-                        If CInt(sValue) = 1 Then
-                            CacheLog LOGPOS_REVITEM, LOGHEADING_NONE, ERR_CATEGORYWARN, "Office configuration entry that has been hidden from ARP: " & ArpProd
-                        End If
-                    End If 'RegReadValue "SystemComponent"
-                    If bOConfigEntry Then
-                        ' found ARP Parent entry
-                        ' only care if it's not a 'helper' entry like it's created by OffScrub
-                        If UBound(arrNames) > 5 OR InStr(UCase(ArpProd), ".MONDO") > 0 Then
-                            Redim Preserve arrTmpArp(iArpCnt)
-                            arrTmpArp(iArpCnt) = ArpProd
-                            If NOT dicArpTmp.Exists(sCurKey) Then dicArpTmp.Add sCurKey, ArpProd
-                            iArpCnt = iArpCnt + 1
-                            Cachelog LOGPOS_RAW,LOGHEADING_NONE,Null,"ARP Entry: " & ArpProd
-                        Else
-                            Cachelog LOGPOS_RAW,LOGHEADING_NONE,Null,"Bad ARP Entry: " & ArpProd
-                            Cachelog LOGPOS_REVITEM,LOGHEADING_NONE,ERR_CATEGORYERROR,ERR_OFFSCRUB_TERMINATED
-                            Cachelog LOGPOS_REVITEM,LOGHEADING_NONE,ERR_CATEGORYERROR,ERR_BADARPMETADATA & GetHiveString(hDefKey) & "\" & sCurKey
-                        End If
-                    End If
-                Else
-'                    'Handled in Click2Run V2 below
+        If bOConfigEntry Then 
+            sName = "SystemComponent"
+            'If RegDWORD 'SystemComponent' = 1 then it's not showing up in ARP
+            If RegReadDWordValue(HKLM, sCurKey, sName, sValue) Then
+                If CInt(sValue) = 1 Then
+                    CacheLog LOGPOS_REVITEM, LOGHEADING_NONE, ERR_CATEGORYWARN, "Office configuration entry that has been hidden from ARP: " & ArpProd
                 End If
-             Next 'ArpProd
-        End If 'RegEnumKey
-    Wend
+            End If 'RegReadValue "SystemComponent"
+            If bOConfigEntry Then
+                ' found ARP Parent entry
+                ' only care if it's not a 'helper' entry 
+                If UBound(arrNames) > 5 OR InStr(UCase(ArpProd), ".MONDO") > 0 Then
+                    Redim Preserve arrTmpArp(iArpCnt)
+                    arrTmpArp(iArpCnt) = ArpProd
+                    If NOT dicArpTmp.Exists(sCurKey) Then dicArpTmp.Add sCurKey, ArpProd
+                    iArpCnt = iArpCnt + 1
+                    Cachelog LOGPOS_RAW, LOGHEADING_NONE, Null, "ARP Entry: " & ArpProd
+                Else
+                    Cachelog LOGPOS_RAW, LOGHEADING_NONE, Null, "Bad ARP Entry: " & ArpProd
+                    Cachelog LOGPOS_REVITEM, LOGHEADING_NONE, ERR_CATEGORYERROR, ERR_OFFSCRUB_TERMINATED
+                    Cachelog LOGPOS_REVITEM, LOGHEADING_NONE, ERR_CATEGORYERROR, ERR_BADARPMETADATA & GetHiveString(hDefKey) & "\" & sCurKey
+                End If
+            End If
+        Else
+'           'Handled in Click2Run V2 below
+        End If
+    Next 'ArpProd
 
     ' initialize arrArpProducts
     If iArpCnt > 0 Then 
@@ -4378,12 +4066,11 @@ Sub FindArpParents
     n = 0
     'For Each ArpProd in arrTmpArp
     For Each dicKey in dicArpTmp.Keys
-    ' get the MultiString entry 'ProductCodes' from 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<Product>'
         ArpProd = dicArpTmp.Item(dicKey)
         sName = "ProductCodes"
         'sSubKeyName = sRegArp & ArpProd & "\"
         sSubKeyName = dicKey
-        If RegReadMultiStringValue(hDefKey,sSubKeyName,sName,arrValues) Then
+        If RegReadMultiStringValue(hDefKey, sSubKeyName, sName, arrValues) Then
             ' fill the array set
             arrArpProducts(n,COL_CONFIGNAME) = ArpProd
             arrArpProducts(n, COL_CONFIGINSTALLTYPE) = "MSI"
@@ -4452,31 +4139,38 @@ Sub FindArpParents
             End If 'NOT fFoundConfigProductCode
         Else
         ' handle Click2Run
-            arrArpProducts(n,COL_CONFIGNAME) = ArpProd
+            arrArpProducts(n, COL_CONFIGNAME) = ArpProd
             arrArpProducts(n, COL_CONFIGINSTALLTYPE) = "C2R"
             If 1 + ARP_CHILDOFFSET > iMaxVal Then 
                 iMaxVal = 1 + ARP_CHILDOFFSET
                 Redim Preserve arrArpProducts(iArpCnt, iMaxVal)
             End If 
             ' V1
-            If RegEnumKey (HKLM, REG_ARP, arrKeys) Then
-                For Each Key in arrKeys
-                    If Len(Key)=38 Then
-                        If Mid(Key,11,4) = "006D" Then
-                            arrArpProducts(n,COL_ARPALLPRODUCTS) = Key
-                            arrArpProducts(n,ARP_CHILDOFFSET) = Key
-                            arrArpProducts(n,ARP_CONFIGPRODUCTCODE) = Key
-                        End If
+            'If RegEnumKey (HKLM, REG_ARP, arrKeys) Then
+            For Each Key in dicArp.Keys
+                If Len(Key) = 38 Then
+                    If Mid(Key, 11, 4) = "006D" Then
+                        arrArpProducts(n, COL_ARPALLPRODUCTS) = Key
+                        arrArpProducts(n, ARP_CHILDOFFSET) = Key
+                        arrArpProducts(n, ARP_CONFIGPRODUCTCODE) = Key
                     End If
-                Next 'Key
-            End If
+                End If
+            Next 'Key
+            'End If
             ' V2
-            iPosMaster = GetArrayPositionFromPattern(arrMaster, "150000-000F-0000-0000-0000000FF1CE}")
-            If iPosMaster = -1 Then iPosMaster = GetArrayPositionFromPattern(arrMaster, "150000-000F-0000-1000-0000000FF1CE}")
+            sMondo = ""
+            If InStr(UCase(ArpProd), ".MONDO") > 0 Then 
+                sMondo = Mid(ArpProd, 7, 2) & "0000-000F-0000-0000-0000000FF1CE}"
+            Else
+                RegReadValue HKLM, dicArp.Item(ArpProd), "UninstallString", sValue, "REG_SZ"
+                sValue = Mid(sValue, InStr(sValue, "Microsoft Office ") + 17, 2)
+                sMondo = sValue & "0000-000F-0000-0000-0000000FF1CE}"
+            End If
+            iPosMaster = GetArrayPositionFromPattern(arrMaster, sMondo)
             If InStr(UCase(ArpProd), ".MONDO") > 0 Then
                 arrArpProducts(n, COL_CONFIGINSTALLTYPE) = "VIRTUAL"
                 If NOT iPosMaster = -1 Then
-                    arrArpProducts(n,ARP_CONFIGPRODUCTCODE) = arrMaster(iPosMaster, COL_PRODUCTCODE)
+                    arrArpProducts(n, ARP_CONFIGPRODUCTCODE) = arrMaster(iPosMaster, COL_PRODUCTCODE)
                 End If
                 If UBound (arrMVProducts) + ARP_CHILDOFFSET > iMaxVal Then 
                     iMaxVal = UBound (arrMVProducts) + ARP_CHILDOFFSET
@@ -4507,8 +4201,452 @@ Sub FindArpParents
 End Sub 'FindArpParents
 
 '=======================================================================================================
-'Module OSPP - Licensing Data
+'Module OSPP - Licensing Data / LicenseState
 '=======================================================================================================
+
+Sub OsppInit
+    On Error Resume Next
+    Dim oWmiLocal
+    Set oWmiLocal = GetObject("winmgmts:\\.\root\cimv2")
+    If iVersionNt > 601 Then 
+        Set Spp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, KeyManagementServicePort, VLActivationInterval, VLRenewalInterval FROM SoftwareLicensingProduct")
+    End If
+    Set Ospp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, KeyManagementServicePort, VLActivationInterval, VLRenewalInterval FROM OfficeSoftwareProtectionProduct")
+    bOsppInit = True
+End Sub 'OsppInit
+'=======================================================================================================
+
+Function GetLicCnt(iPosMaster, iVersionMajor, ByVal sConfigName, sPossibleSkus, sPossibleSkusFull)
+    On Error Resume Next
+    Dim iLicCnt, iLeft, iCnt
+    Dim sPrefix
+    Dim ProdLic, ConfigProd, prop, ProtectionClass
+    Dim arrLic
+    Dim fMsiMatchesOsppID, fExclude
+    
+    If NOT bOsppInit Then OsppInit
+    If NOT CheckArray(Ospp) AND NOT IsObject(Ospp) Then Exit Function
+    GetPrefixAndConfig iVersionMajor, sConfigName, sPrefix
+    If sConfigName <> "" Then arrLic = Split(sConfigName,";")
+    iLicCnt = 0
+    If CheckArray(arrLic) Then
+        For Each ConfigProd in arrLic
+            iLeft = Len(sPrefix) + Len(ConfigProd)
+            If iVersionMajor > 14 and iVersionNt > 601 Then
+                Set ProtectionClass = Spp
+            Else
+                Set ProtectionClass = Ospp
+            End If
+            Err.Clear
+            For Each ProdLic in ProtectionClass
+                If NOT Err = 0 Then
+                    err.Clear
+                    Exit For
+                End If
+                fMsiMatchesOsppID = False
+                fExclude = False
+                If NOT iPosMaster = -1 Then
+                    If (NOT IsNull (Mid(Prodlic.ProductKeyID, 13, 10))) AND NOT IsNull(arrMaster(iPosMaster, COL_PRODUCTID)) Then _ 
+                        fMsiMatchesOsppID = (Mid(arrMaster(iPosMaster, COL_PRODUCTID), 7, 10) = Mid(Prodlic.ProductKeyID, 13, 10) )
+                End If
+            ' check for exceptions
+                If UCase(ConfigProd) = "VISIO" Then
+                    fExclude = InStr(Prodlic.Name, "DeltaTrial") > 0
+                End If 'visio
+            ' add matches to counter and sku-string
+                If (LCase(Left(ProdLic.Name, iLeft)) = LCase(sPrefix & ConfigProd) OR fMsiMatchesOsppID) AND NOT fExclude Then 
+                    iLicCnt = iLicCnt + 1
+                    sPossibleSkus = sPossibleSkus & "; " & ProdLic.Name
+                End If
+            Next 'ProdLic
+        Next 'ConfigProd
+    End If
+    sPossibleSkusFull = sPossibleSkus
+    sPossibleSkus = Replace(sPossibleSkus,sPrefix,"")
+    sPossibleSkus = Replace(sPossibleSkus," edition;",",")
+    GetLicCnt = iLicCnt
+End Function 'GetLicCnt
+'=======================================================================================================
+
+Function GetLicenseData(iPosMaster, iVersionMajor, ByVal sConfigName, iLicPos, sPossibleSkusFull)
+    On Error Resume Next
+    Dim arrLicData (14)
+    Dim iPropCnt, iLicCnt, iLeft
+    Dim ProdLic, prop, ConfigProd, ProtectionClass
+    Dim sPrefix, sAllLic, sName
+    Dim arrLic
+    Dim fMsiMatchesOsppID
+    
+    If NOT bOsppInit Then OsppInit
+    iLeft = Len(sConfigName)
+    GetPrefixAndConfig iVersionMajor, sConfigName, sPrefix
+    If sConfigName <> "" Then arrLic = Split(sConfigName, ";")
+    For Each ConfigProd in arrLic
+        sAllLic = sAllLic & sPrefix&ConfigProd & ";"
+    Next
+    If CheckArray(arrLic) Then
+        iLicCnt = 0
+        If iVersionMajor > 14 and iVersionNt > 601 Then
+            Set ProtectionClass = Spp
+        Else
+            Set ProtectionClass = Ospp
+        End If
+        For Each ProdLic in ProtectionClass
+            fMsiMatchesOsppID = False
+            If NOT iPosMaster = -1 Then
+                If (NOT IsNull (Mid(Prodlic.ProductKeyID, 13, 10))) AND NOT IsNull(arrMaster(iPosMaster, COL_PRODUCTID)) Then _ 
+                    fMsiMatchesOsppID = (Mid(arrMaster(iPosMaster, COL_PRODUCTID), 7, 10) = Mid(Prodlic.ProductKeyID, 13, 10) )
+            End If
+            iLicCnt = iLicCnt + 1
+            For Each ConfigProd in arrLic
+                iLeft = Len(sPrefix) + Len(ConfigProd)
+                If Len(ProdLic.Name) > iLeft -1 Then
+                    If (LCase(Left(ProdLic.Name, iLeft)) = LCase(sPrefix & ConfigProd) OR fMsiMatchesOsppID) AND (iLicCnt > iLicPos) AND InStr(sPossibleSkusFull, Prodlic.Name) > 0 Then 
+                        iLicPos = iLicCnt
+                        arrLicData(OSPP_ID) = ProdLic.ID
+                        arrLicData(OSPP_APPLICATIONID) = ProdLic.ApplicationId
+                        arrLicData(OSPP_PARTIALPRODUCTKEY) = ProdLic.PartialProductKey
+                        arrLicData(OSPP_DESCRIPTION) = ProdLic.Description
+                        arrLicData(OSPP_NAME) = ProdLic.Name
+                        arrLicData(OSPP_LICENSESTATUS) = ProdLic.LicenseStatus
+                        arrLicData(OSPP_LICENSESTATUSREASON) = ProdLic.LicenseStatusReason
+                        arrLicData(OSPP_PRODUCTKEYID) = ProdLic.ProductKeyID
+                        arrLicData(OSPP_GRACEPERIODREMAINING) = ProdLic.GracePeriodRemaining
+                        arrLicData(OSPP_LICENSEFAMILY) = ProdLic.LicenseFamily
+                        arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME) = ProdLic.DiscoveredKeyManagementServiceMachineName
+                        arrLicData(OSPP_KEYMANAGEMENTSERVICEPORT) = ProdLic.KeyManagementServicePort
+                        arrLicData(OSPP_VLACTIVATIONINTERVAL) = ProdLic.VLActivationInterval
+                        arrLicData(OSPP_VLRENEWALINTERVAL) = ProdLic.VLRenewalInterval
+                        GetLicenseData = arrLicData
+                        Exit Function
+                    End If
+                End If
+            Next
+        Next 'ProdLic
+    End If
+    GetLicenseData = arrLicData
+End Function 'GetLicenseData
+'=======================================================================================================
+
+'-------------------------------------------------------------------------------
+'   GetLicPrefix
+'
+'   Get the prefix string used in the Prodlic.Name string
+'   used in Prodlic.Name
+'   Returns the updated ConfigProd name string that matches the Prodlic.Name
+'-------------------------------------------------------------------------------
+
+Sub GetPrefixAndConfig(iVersionMajor, sConfigName, sPrefix)
+    On Error Resume Next
+    Select Case iVersionMajor
+    Case 14
+        sPrefix = "Office 14, Office"
+        If sConfigName = "SingleImage" Then sConfigName = "SingleImage;Professional;HomeBusiness;HomeStudent;OneNote;Word;HSOneNote;HSWord;OEM"
+        If sConfigName = "Click2Run" Then sConfigName = "Click2Run;HomeBusiness;HomeStudent;Starter;OEM"
+        If Len(sConfigName) > 2 Then
+            If UCase(Left(sConfigName, 3)) = "PRJ" Then sConfigName = "Project"
+            If UCase(Right(sConfigName, 1)) = "R" Then sConfigName = Left(sConfigName,(Len(sConfigName) - 1))
+        End If
+    Case 15
+        sPrefix = "Office 15, Office"
+        If Len(sConfigName) > 2 Then
+            If UCase(Left(sConfigName, 3)) = "PRJ" Then sConfigName = "Project"
+            If UCase(Right(sConfigName, 1)) = "R" Then sConfigName = Left(sConfigName, (Len(sConfigName) - 1))
+            If UCase(sConfigName) = "VISSTD" Then sConfigName = "VISSTD;VisioStd"
+            If UCase(sConfigName) = "VISPRO" Then sConfigName = "VISPRO;VisioPro"
+            If UCase(sConfigName) = "PROPLUSR" Then sConfigName = "PROPLUSR;O365ProPlusR"
+        End If
+    Case 16
+        sPrefix = "Office 16, Office16"
+        If Len(sConfigName) > 2 Then
+            If UCase(Left(sConfigName, 3)) = "PRJ" Then sConfigName = "Project"
+            If UCase(Right(sConfigName, 1)) = "R" Then sConfigName = Left(sConfigName, (Len(sConfigName) - 1))
+            If UCase(sConfigName) = "VISSTD" Then sConfigName = "VISSTD;VisioStd"
+            If UCase(sConfigName) = "VISPRO" Then sConfigName = "VISPRO;VisioPro"
+        End If
+    Case Else
+    End Select
+End Sub
+'=======================================================================================================
+
+Function GetLicErrDesc(hErr)
+On Error Resume Next
+Select Case "0x"& hErr
+Case "0x0" : GetLicErrDesc = "Success."
+Case "0xC004B001" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B002" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B003" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B004" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B005" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B006" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B007" : GetLicErrDesc = "The activation server reported that the computer could not connect to the activation server."
+Case "0xC004B008" : GetLicErrDesc = "The activation server determined that the computer could not be activated."
+Case "0xC004B009" : GetLicErrDesc = "The activation server determined that the license is invalid."
+Case "0xC004B011" : GetLicErrDesc = "The activation server determined that your computer clock time is not correct. You must correct your clock before you can activate."
+Case "0xC004B100" : GetLicErrDesc = "The activation server determined that the computer could not be activated."
+Case "0xC004C001" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C002" : GetLicErrDesc = "The activation server determined there is a problem with the specified product key."
+Case "0xC004C003" : GetLicErrDesc = "The activation server determined the specified product key has been blocked."
+Case "0xC004C004" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C005" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C006" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C007" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C008" : GetLicErrDesc = "The activation server determined that the specified product key could not be used."
+Case "0xC004C009" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C00A" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C00B" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C00C" : GetLicErrDesc = "The activation server experienced an error."
+Case "0xC004C00D" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C00E" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C00F" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C010" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C011" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C012" : GetLicErrDesc = "The activation server experienced a network error."
+Case "0xC004C013" : GetLicErrDesc = "The activation server experienced an error."
+Case "0xC004C014" : GetLicErrDesc = "The activation server experienced an error."
+Case "0xC004C020" : GetLicErrDesc = "The activation server reported that the Multiple Activation Key has exceeded its limit."
+Case "0xC004C021" : GetLicErrDesc = "The activation server reported that the Multiple Activation Key extension limit has been exceeded."
+Case "0xC004C022" : GetLicErrDesc = "The activation server reported that the re-issuance limit was not found."
+Case "0xC004C023" : GetLicErrDesc = "The activation server reported that the override request was not found."
+Case "0xC004C016" : GetLicErrDesc = "The activation server reported that the specified product key cannot be used for online activation."
+Case "0xC004C017" : GetLicErrDesc = "The activation server determined the specified product key has been blocked for this geographic location."
+Case "0xC004C015" : GetLicErrDesc = "The activation server experienced an error."
+Case "0xC004C050" : GetLicErrDesc = "The activation server experienced a general error."
+Case "0xC004C030" : GetLicErrDesc = "The activation server reported that time based activation attempted before start date."
+Case "0xC004C031" : GetLicErrDesc = "The activation server reported that time based activation attempted after end date."
+Case "0xC004C032" : GetLicErrDesc = "The activation server reported that new time based activation not available."
+Case "0xC004C033" : GetLicErrDesc = "The activation server reported that time based product key not configured for activation."
+Case "0xC004C04F" : GetLicErrDesc = "The activation server reported that no business rules available to activate specified product key."
+Case "0xC004C700" : GetLicErrDesc = "The activation server reported that business rule cound not find required input."
+Case "0xC004C750" : GetLicErrDesc = "The activation server reported that NULL value specified for business property name and Id."
+Case "0xC004C751" : GetLicErrDesc = "The activation server reported that property name specifies unknown property."
+Case "0xC004C752" : GetLicErrDesc = "The activation server reported that property Id specifies unknown property."
+Case "0xC004C755" : GetLicErrDesc = "The activation server reported that it failed to update product key binding."
+Case "0xC004C756" : GetLicErrDesc = "The activation server reported that it failed to insert product key binding."
+Case "0xC004C757" : GetLicErrDesc = "The activation server reported that it failed to delete product key binding."
+Case "0xC004C758" : GetLicErrDesc = "The activation server reported that it failed to process input XML for product key bindings."
+Case "0xC004C75A" : GetLicErrDesc = "The activation server reported that it failed to insert product key property."
+Case "0xC004C75B" : GetLicErrDesc = "The activation server reported that it failed to update product key property."
+Case "0xC004C75C" : GetLicErrDesc = "The activation server reported that it failed to delete product key property."
+Case "0xC004C764" : GetLicErrDesc = "The activation server reported that the product key type is unknown."
+Case "0xC004C770" : GetLicErrDesc = "The activation server reported that the product key type is being used by another user."
+Case "0xC004C780" : GetLicErrDesc = "The activation server reported that it failed to insert product key record."
+Case "0xC004C781" : GetLicErrDesc = "The activation server reported that it failed to update product key record."
+Case "0xC004C401" : GetLicErrDesc = "The Vista Genuine Advantage Service determined that the installation is not genuine."
+Case "0xC004C600" : GetLicErrDesc = "The Vista Genuine Advantage Service determined that the installation is not genuine."
+Case "0xC004C801" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C802" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C803" : GetLicErrDesc = "The activation server determined the specified product key has been revoked."
+Case "0xC004C804" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C805" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C810" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C811" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C812" : GetLicErrDesc = "The activation server determined that the specified product key has exceeded its activation count."
+Case "0xC004C813" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C814" : GetLicErrDesc = "The activation server determined the specified product key is invalid."
+Case "0xC004C815" : GetLicErrDesc = "The activation server determined the license is invalid."
+Case "0xC004C816" : GetLicErrDesc = "The activation server reported that the specified product key cannot be used for online activation."
+Case "0xC004E001" : GetLicErrDesc = "The Software Licensing Service determined that the specified context is invalid."
+Case "0xC004E002" : GetLicErrDesc = "The Software Licensing Service reported that the license store contains inconsistent data."
+Case "0xC004E003" : GetLicErrDesc = "The Software Licensing Service reported that license evaluation failed."
+Case "0xC004E004" : GetLicErrDesc = "The Software Licensing Service reported that the license has not been evaluated."
+Case "0xC004E005" : GetLicErrDesc = "The Software Licensing Service reported that the license is not activated."
+Case "0xC004E006" : GetLicErrDesc = "The Software Licensing Service reported that the license contains invalid data."
+Case "0xC004E007" : GetLicErrDesc = "The Software Licensing Service reported that the license store does not contain the requested license."
+Case "0xC004E008" : GetLicErrDesc = "The Software Licensing Service reported that the license property is invalid."
+Case "0xC004E009" : GetLicErrDesc = "The Software Licensing Service reported that the license store is not initialized."
+Case "0xC004E00A" : GetLicErrDesc = "The Software Licensing Service reported that the license store is already initialized."
+Case "0xC004E00B" : GetLicErrDesc = "The Software Licensing Service reported that the license property is invalid."
+Case "0xC004E00C" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be opened or created."
+Case "0xC004E00D" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be written."
+Case "0xC004E00E" : GetLicErrDesc = "The Software Licensing Service reported that the license store could not read the license file."
+Case "0xC004E00F" : GetLicErrDesc = "The Software Licensing Service reported that the license property is corrupted."
+Case "0xC004E010" : GetLicErrDesc = "The Software Licensing Service reported that the license property is missing."
+Case "0xC004E011" : GetLicErrDesc = "The Software Licensing Service reported that the license store contains an invalid license file."
+Case "0xC004E012" : GetLicErrDesc = "The Software Licensing Service reported that the license store failed to start synchronization properly."
+Case "0xC004E013" : GetLicErrDesc = "The Software Licensing Service reported that the license store failed to synchronize properly."
+Case "0xC004E014" : GetLicErrDesc = "The Software Licensing Service reported that the license property is invalid."
+Case "0xC004E015" : GetLicErrDesc = "The Software Licensing Service reported that license consumption failed."
+Case "0xC004E016" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
+Case "0xC004E017" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
+Case "0xC004E018" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
+Case "0xC004E019" : GetLicErrDesc = "The Software Licensing Service determined that validation of the specified product key failed."
+Case "0xC004E01A" : GetLicErrDesc = "The Software Licensing Service reported that invalid add-on information was found."
+Case "0xC004E01B" : GetLicErrDesc = "The Software Licensing Service reported that not all hardware information could be collected."
+Case "0xC004E01C" : GetLicErrDesc = "This evaluation product key is no longer valid."
+Case "0xC004E01D" : GetLicErrDesc = "The new product key cannot be used on this installation of Windows. Type a different product key. (CD-AB)"
+Case "0xC004E01E" : GetLicErrDesc = "The new product key cannot be used on this installation of Windows. Type a different product key. (AB-AB)"
+Case "0xC004E01F" : GetLicErrDesc = "The new product key cannot be used on this installation of Windows. Type a different product key. (AB-CD)"
+Case "0xC004E020" : GetLicErrDesc = "The Software Licensing Service reported that there is a mismatched between a policy value and information stored in the OtherInfo section."
+Case "0xC004E021" : GetLicErrDesc = "The Software Licensing Service reported that the Genuine information contained in the license is not consistent."
+Case "0xC004E022" : GetLicErrDesc = "The Software Licensing Service reported that the secure store id value in license does not match with the current value."
+Case "0x8004E101" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store file version is invalid."
+Case "0x8004E102" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store contains an invalid descriptor table."
+Case "0x8004E103" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store contains a token with an invalid header/footer."
+Case "0x8004E104" : GetLicErrDesc = "The Software Licensing Service reported that a Token Store token has an invalid name."
+Case "0x8004E105" : GetLicErrDesc = "The Software Licensing Service reported that a Token Store token has an invalid extension."
+Case "0x8004E106" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store contains a duplicate token."
+Case "0x8004E107" : GetLicErrDesc = "The Software Licensing Service reported that a token in the Token Store has a size mismatch."
+Case "0x8004E108" : GetLicErrDesc = "The Software Licensing Service reported that a token in the Token Store contains an invalid hash."
+Case "0x8004E109" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store was unable to read a token."
+Case "0x8004E10A" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store was unable to write a token."
+Case "0x8004E10B" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store attempted an invalid file operation."
+Case "0x8004E10C" : GetLicErrDesc = "The Software Licensing Service reported that there is no active transaction."
+Case "0x8004E10D" : GetLicErrDesc = "The Software Licensing Service reported that the Token Store file header is invalid."
+Case "0x8004E10E" : GetLicErrDesc = "The Software Licensing Service reported that a Token Store token descriptor is invalid."
+Case "0xC004F001" : GetLicErrDesc = "The Software Licensing Service reported an internal error."
+Case "0xC004F002" : GetLicErrDesc = "The Software Licensing Service reported that rights consumption failed."
+Case "0xC004F003" : GetLicErrDesc = "The Software Licensing Service reported that the required license could not be found."
+Case "0xC004F004" : GetLicErrDesc = "The Software Licensing Service reported that the product key does not match the range defined in the license."
+Case "0xC004F005" : GetLicErrDesc = "The Software Licensing Service reported that the product key does not match the product key for the license."
+Case "0xC004F006" : GetLicErrDesc = "The Software Licensing Service reported that the signature file for the license is not available."
+Case "0xC004F007" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be found."
+Case "0xC004F008" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be found."
+Case "0xC004F009" : GetLicErrDesc = "The Software Licensing Service reported that the grace period expired."
+Case "0xC004F00A" : GetLicErrDesc = "The Software Licensing Service reported that the application ID does not match the application ID for the license."
+Case "0xC004F00B" : GetLicErrDesc = "The Software Licensing Service reported that the product identification data is not available."
+Case "0x4004F00C" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid grace period."
+Case "0x4004F00D" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid out of tolerance grace period."
+Case "0xC004F00E" : GetLicErrDesc = "The Software Licensing Service determined that the license could not be used by the current version of the security processor component."
+Case "0xC004F00F" : GetLicErrDesc = "The Software Licensing Service reported that the hardware ID binding is beyond the level of tolerance."
+Case "0xC004F010" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
+Case "0xC004F011" : GetLicErrDesc = "The Software Licensing Service reported that the license file is not installed."
+Case "0xC004F012" : GetLicErrDesc = "The Software Licensing Service reported that the call has failed because the value for the input key was not found."
+Case "0xC004F013" : GetLicErrDesc = "The Software Licensing Service determined that there is no permission to run the software."
+Case "0xC004F014" : GetLicErrDesc = "The Software Licensing Service reported that the product key is not available."
+Case "0xC004F015" : GetLicErrDesc = "The Software Licensing Service reported that the license is not installed."
+Case "0xC004F016" : GetLicErrDesc = "The Software Licensing Service determined that the request is not supported."
+Case "0xC004F017" : GetLicErrDesc = "The Software Licensing Service reported that the license is not installed."
+Case "0xC004F018" : GetLicErrDesc = "The Software Licensing Service reported that the license does not contain valid location data for the activation server."
+Case "0xC004F019" : GetLicErrDesc = "The Software Licensing Service determined that the requested event ID is invalid."
+Case "0xC004F01A" : GetLicErrDesc = "The Software Licensing Service determined that the requested event is not registered with the service."
+Case "0xC004F01B" : GetLicErrDesc = "The Software Licensing Service reported that the event ID is already registered."
+Case "0xC004F01C" : GetLicErrDesc = "The Software Licensing Service reported that the license is not installed."
+Case "0xC004F01D" : GetLicErrDesc = "The Software Licensing Service reported that the verification of the license failed."
+Case "0xC004F01E" : GetLicErrDesc = "The Software Licensing Service determined that the input data type does not match the data type in the license."
+Case "0xC004F01F" : GetLicErrDesc = "The Software Licensing Service determined that the license is invalid."
+Case "0xC004F020" : GetLicErrDesc = "The Software Licensing Service determined that the license package is invalid."
+Case "0xC004F021" : GetLicErrDesc = "The Software Licensing Service reported that the validity period of the license has expired."
+Case "0xC004F022" : GetLicErrDesc = "The Software Licensing Service reported that the license authorization failed."
+Case "0xC004F023" : GetLicErrDesc = "The Software Licensing Service reported that the license is invalid."
+Case "0xC004F024" : GetLicErrDesc = "The Software Licensing Service reported that the license is invalid."
+Case "0xC004F025" : GetLicErrDesc = "The Software Licensing Service reported that the action requires administrator privilege."
+Case "0xC004F026" : GetLicErrDesc = "The Software Licensing Service reported that the required data is not found."
+Case "0xC004F027" : GetLicErrDesc = "The Software Licensing Service reported that the license is tampered."
+Case "0xC004F028" : GetLicErrDesc = "The Software Licensing Service reported that the policy cache is invalid."
+Case "0xC004F029" : GetLicErrDesc = "The Software Licensing Service cannot be started in the current OS mode."
+Case "0xC004F02A" : GetLicErrDesc = "The Software Licensing Service reported that the license is invalid."
+Case "0xC004F02C" : GetLicErrDesc = "The Software Licensing Service reported that the format for the offline activation data is incorrect."
+Case "0xC004F02D" : GetLicErrDesc = "The Software Licensing Service determined that the version of the offline Confirmation ID (CID) is incorrect."
+Case "0xC004F02E" : GetLicErrDesc = "The Software Licensing Service determined that the version of the offline Confirmation ID (CID) is not supported."
+Case "0xC004F02F" : GetLicErrDesc = "The Software Licensing Service reported that the length of the offline Confirmation ID (CID) is incorrect."
+Case "0xC004F030" : GetLicErrDesc = "The Software Licensing Service determined that the Installation ID (IID) or the Confirmation ID (CID) could not been saved."
+Case "0xC004F031" : GetLicErrDesc = "The Installation ID (IID) and the Confirmation ID (CID) do not match. Please confirm the IID and reacquire a new CID if necessary."
+Case "0xC004F032" : GetLicErrDesc = "The Software Licensing Service determined that the binding data is invalid."
+Case "0xC004F033" : GetLicErrDesc = "The Software Licensing Service reported that the product key is not allowed to be installed. Please see the eventlog for details."
+Case "0xC004F034" : GetLicErrDesc = "The Software Licensing Service reported that the license could not be found or was invalid."
+Case "0xC004F035" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated with a Volume license product key. Volume-licensed systems require upgrading from a qualifying operating system. Please contact your system administrator or use a different type of key."
+Case "0xC004F038" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The count reported by your Key Management Service (KMS) is insufficient. Please contact your system administrator."
+Case "0xC004F039" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated.  The Key Management Service (KMS) is not enabled."
+Case "0x4004F040" : GetLicErrDesc = "The Software Licensing Service reported that the computer was activated but the owner should verify the Product Use Rights."
+Case "0xC004F041" : GetLicErrDesc = "The Software Licensing Service determined that the Key Management Service (KMS) is not activated. KMS needs to be activated. Please contact system administrator."
+Case "0xC004F042" : GetLicErrDesc = "The Software Licensing Service determined that the specified Key Management Service (KMS) cannot be used."
+Case "0xC004F047" : GetLicErrDesc = "The Software Licensing Service reported that the proxy policy has not been updated."
+Case "0xC004F04D" : GetLicErrDesc = "The Software Licensing Service determined that the Installation ID (IID) or the Confirmation ID (CID) is invalid."
+Case "0xC004F04F" : GetLicErrDesc = "The Software Licensing Service reported that license management information was not found in the licenses."
+Case "0xC004F050" : GetLicErrDesc = "The Software Licensing Service reported that the product key is invalid."
+Case "0xC004F051" : GetLicErrDesc = "The Software Licensing Service reported that the product key is blocked."
+Case "0xC004F052" : GetLicErrDesc = "The Software Licensing Service reported that the licenses contain duplicated properties."
+Case "0xC004F053" : GetLicErrDesc = "The Software Licensing Service determined that the license is invalid. The license contains an override policy that is not configured properly."
+Case "0xC004F054" : GetLicErrDesc = "The Software Licensing Service reported that license management information has duplicated data."
+Case "0xC004F055" : GetLicErrDesc = "The Software Licensing Service reported that the base SKU is not available."
+Case "0xC004F056" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated using the Key Management Service (KMS)."
+Case "0xC004F057" : GetLicErrDesc = "The Software Licensing Service reported that the computer BIOS is missing a required license."
+Case "0xC004F058" : GetLicErrDesc = "The Software Licensing Service reported that the computer BIOS is missing a required license."
+Case "0xC004F059" : GetLicErrDesc = "The Software Licensing Service reported that a license in the computer BIOS is invalid."
+Case "0xC004F060" : GetLicErrDesc = "The Software Licensing Service determined that the version of the license package is invalid."
+Case "0xC004F061" : GetLicErrDesc = "The Software Licensing Service determined that this specified product key can only be used for upgrading, not for clean installations."
+Case "0xC004F062" : GetLicErrDesc = "The Software Licensing Service reported that a required license could not be found."
+Case "0xC004F063" : GetLicErrDesc = "The Software Licensing Service reported that the computer BIOS is missing a required license."
+Case "0xC004F064" : GetLicErrDesc = "The Software Licensing Service reported that the non-genuine grace period expired."
+Case "0x4004F065" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid non-genuine grace period."
+Case "0xC004F066" : GetLicErrDesc = "The Software Licensing Service reported that the genuine information property can not be set before dependent property been set."
+Case "0xC004F067" : GetLicErrDesc = "The Software Licensing Service reported that the non-genuine grace period expired (type 2)."
+Case "0x4004F068" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid non-genuine grace period (type 2)."
+Case "0xC004F069" : GetLicErrDesc = "The Software Licensing Service reported that the product SKU is not found."
+Case "0xC004F06A" : GetLicErrDesc = "The Software Licensing Service reported that the requested operation is not allowed."
+Case "0xC004F06B" : GetLicErrDesc = "The Software Licensing Service determined that it is running in a virtual machine. The Key Management Service (KMS) is not supported in this mode."
+Case "0xC004F06C" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The Key Management Service (KMS) determined that the request timestamp is invalid."
+Case "0xC004F071" : GetLicErrDesc = "The Software Licensing Service reported that the plug-in manifest file is incorrect."
+Case "0xC004F072" : GetLicErrDesc = "The Software Licensing Service reported that the license policies for fast query could not be found."
+Case "0xC004F073" : GetLicErrDesc = "The Software Licensing Service reported that the license policies for fast query have not been loaded."
+Case "0xC004F074" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. No Key Management Service (KMS) could be contacted. Please see the Application Event Log for additional information."
+Case "0xC004F075" : GetLicErrDesc = "The Software Licensing Service reported that the operation cannot be completed because the service is stopping."
+Case "0xC004F076" : GetLicErrDesc = "The Software Licensing Service reported that the requested plug-in cannot be found."
+Case "0xC004F077" : GetLicErrDesc = "The Software Licensing Service determined incompatible version of authentication data."
+Case "0xC004F078" : GetLicErrDesc = "The Software Licensing Service reported that the key is mismatched."
+Case "0xC004F079" : GetLicErrDesc = "The Software Licensing Service reported that the authentication data is not set."
+Case "0xC004F07A" : GetLicErrDesc = "The Software Licensing Service reported that the verification could not be done."
+Case "0xC004F07B" : GetLicErrDesc = "The requested operation is unavailable while the Software Licensing Service is running."
+Case "0xC004F07C" : GetLicErrDesc = "The Software Licensing Service determined that the version of the computer BIOS is invalid."
+Case "0xC004F200" : GetLicErrDesc = "The Software Licensing Service reported that current state is not genuine."
+Case "0xC004F301" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The token-based activation challenge has expired."
+Case "0xC004F302" : GetLicErrDesc = "The Software Licensing Service reported that Silent Activation failed. The Software Licensing Service reported that there are no certificates found in the system that could activate the product without user interaction."
+Case "0xC004F303" : GetLicErrDesc = "The Software Licensing Service reported that the certificate chain could not be built or failed validation."
+Case "0xC004F304" : GetLicErrDesc = "The Software Licensing Service reported that required license could not be found."
+Case "0xC004F305" : GetLicErrDesc = "The Software Licensing Service reported that there are no certificates found in the system that could activate the product."
+Case "0xC004F306" : GetLicErrDesc = "The Software Licensing Service reported that this software edition does not support token-based activation."
+Case "0xC004F307" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. Activation data is invalid."
+Case "0xC004F308" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. Activation data is tampered."
+Case "0xC004F309" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. Activation challenge and response do not match."
+Case "0xC004F30A" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate does not match the conditions in the license."
+Case "0xC004F30B" : GetLicErrDesc = "The Software Licensing Service reported that the inserted smartcard could not be used to activate the product."
+Case "0xC004F30C" : GetLicErrDesc = "The Software Licensing Service reported that the token-based activation license content is invalid."
+Case "0xC004F30D" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The thumbprint is invalid."
+Case "0xC004F30E" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The thumbprint does not match any certificate."
+Case "0xC004F30F" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate does not match the criteria specified in the issuance license."
+Case "0xC004F310" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate does not match the trust point identifier (TPID) specified in the issuance license."
+Case "0xC004F311" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. A soft token cannot be used for activation."
+Case "0xC004F312" : GetLicErrDesc = "The Software Licensing Service reported that the computer could not be activated. The certificate cannot be used because its private key is exportable."
+Case "0xC004F313" : GetLicErrDesc = "The Software Licensing Service reported that the CNG encryption library could not be loaded.  The current certificate may not be available on this version of Windows."
+Case "0xC004FC03" : GetLicErrDesc = "A networking problem has occurred while activating your copy of Windows."
+Case "0x4004FC04" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the timebased validity period."
+Case "0x4004FC05" : GetLicErrDesc = "The Software Licensing Service reported that the application has a perpetual grace period."
+Case "0x4004FC06" : GetLicErrDesc = "The Software Licensing Service reported that the application is running within the valid extended grace period."
+Case "0xC004FC07" : GetLicErrDesc = "The Software Licensing Service reported that the validity period expired."
+Case "0xC004FE00" : GetLicErrDesc = "The Software Licensing Service reported that activation is required to recover from tampering of SL Service trusted store."
+Case "0xC004D101" : GetLicErrDesc = "The security processor reported an initialization error."
+Case "0x8004D102" : GetLicErrDesc = "The security processor reported that the machine time is inconsistent with the trusted time."
+Case "0xC004D103" : GetLicErrDesc = "The security processor reported that an error has occurred."
+Case "0xC004D104" : GetLicErrDesc = "The security processor reported that invalid data was used."
+Case "0xC004D105" : GetLicErrDesc = "The security processor reported that the value already exists."
+Case "0xC004D107" : GetLicErrDesc = "The security processor reported that an insufficient buffer was used."
+Case "0xC004D108" : GetLicErrDesc = "The security processor reported that invalid data was used."
+Case "0xC004D109" : GetLicErrDesc = "The security processor reported that an invalid call was made."
+Case "0xC004D10A" : GetLicErrDesc = "The security processor reported a version mismatch error."
+Case "0x8004D10B" : GetLicErrDesc = "The security processor cannot operate while a debugger is attached."
+Case "0xC004D301" : GetLicErrDesc = "The security processor reported that the trusted data store was tampered."
+Case "0xC004D302" : GetLicErrDesc = "The security processor reported that the trusted data store was rearmed."
+Case "0xC004D303" : GetLicErrDesc = "The security processor reported that the trusted store has been recreated."
+Case "0xC004D304" : GetLicErrDesc = "The security processor reported that entry key was not found in the trusted data store."
+Case "0xC004D305" : GetLicErrDesc = "The security processor reported that the entry key already exists in the trusted data store."
+Case "0xC004D306" : GetLicErrDesc = "The security processor reported that the entry key is too big to fit in the trusted data store."
+Case "0xC004D307" : GetLicErrDesc = "The security processor reported that the maximum allowed number of re-arms has been exceeded.  You must re-install the OS before trying to re-arm again."
+Case "0xC004D308" : GetLicErrDesc = "The security processor has reported that entry data size is too big to fit in the trusted data store."
+Case "0xC004D309" : GetLicErrDesc = "The security processor has reported that the machine has gone out of hardware tolerance."
+Case "0xC004D30A" : GetLicErrDesc = "The security processor has reported that the secure timer already exists."
+Case "0xC004D30B" : GetLicErrDesc = "The security processor has reported that the secure timer was not found."
+Case "0xC004D30C" : GetLicErrDesc = "The security processor has reported that the secure timer has expired."
+Case "0xC004D30D" : GetLicErrDesc = "The security processor has reported that the secure timer name is too long."
+Case "0xC004D30E" : GetLicErrDesc = "The security processor reported that the trusted data store is full."
+Case "0xC004D401" : GetLicErrDesc = "The security processor reported a system file mismatch error."
+Case "0xC004D402" : GetLicErrDesc = "The security processor reported a system file mismatch error."
+Case "0xC004D501" : GetLicErrDesc = "The security processor reported an error with the kernel data."
+Case Else : GetLicErrDesc = ""
+End Select
+End Function 'GetLicErrDesc
+
+
 
 'Use WMI to query the license details for installed Office products
 'The license details of the products are mapped to the OSPP data based on the "Configuration Productname"
@@ -4562,7 +4700,7 @@ Sub OsppCollect
             sText = Replace(sText, "Volume", "")
             sText = Replace(sText, "Retail", "")
             
-            iVersionMajor = CInt(Left(arrVirt2Products(iVPCnt, VIRTPROD_PRODUCTVERSION), 2))
+            iVersionMajor = 15
             'A list of all possible licenses this product can use is stored in sPossibleSkus
             sPossibleSkus = ""
             sXmlLogLine = ""
@@ -4580,6 +4718,35 @@ Sub OsppCollect
                 Next 'iLic
                 arrVirt2Products(iVPCnt, VIRTPROD_OSPPLICENSEXML) = sXmlLogLine
                 arrVirt2Products(iVPCnt, VIRTPROD_OSPPLICENSE) = sOsppLicenses
+            End If 'iLicCnt
+        Next 'iVPCnt
+    End If 'arrVirt2Products
+
+    If UBound(arrVirt3Products) > -1 Then
+        For iVPCnt = 0 To UBound(arrVirt3Products, 1)
+            sText = "" : sText = arrVirt3Products(iVPCnt, VIRTPROD_CONFIGNAME)
+            'sText = Replace(sText, "O365", "")
+            sText = Replace(sText, "Volume", "")
+            sText = Replace(sText, "Retail", "")
+            
+            iVersionMajor = 16
+            'A list of all possible licenses this product can use is stored in sPossibleSkus
+            sPossibleSkus = ""
+            sXmlLogLine = ""
+            'Loop all licenses
+            iLicCnt = GetLicCnt(-1, iVersionMajor, sText, sPossibleSkus, sPossibleSkusFull)
+            If iLicCnt > 0 Then
+                sOsppLicenses = "Possible Licenses;" & Mid(sPossibleSkus, 3)
+                'List installed licenses (ProductKeyID <> "")
+                iLicPos = 0
+                sXmlLogLine = ""
+                For iLic = 1 To iLicCnt
+                    arrLicData = GetLicenseData(-1, iVersionMajor, sText, iLicPos, sPossibleSkusFull)
+                    If InStr(sPossibleSkusFull, arrLicData(OSPP_NAME)) > 0 Then AddLicXmlString sXmlLogLine, arrLicData
+                    If arrLicData(OSPP_PRODUCTKEYID) <> "" Then AddLicTxtString sOsppLicenses, arrLicData
+                Next 'iLic
+                arrVirt3Products(iVPCnt, VIRTPROD_OSPPLICENSEXML) = sXmlLogLine
+                arrVirt3Products(iVPCnt, VIRTPROD_OSPPLICENSE) = sOsppLicenses
             End If 'iLicCnt
         Next 'iVPCnt
     End If 'arrVirt2Products
@@ -4660,13 +4827,20 @@ End Sub 'AddLicTxtString
 'Module Productslist
 '=======================================================================================================
 Sub FindAllProducts
-    Dim sActiveSub, sErrHnd
-    Dim AllProducts, ProdX
-    Dim arrTmpSids()
-    Dim sSid, Arr
+    Dim sActiveSub, sErrHnd 
+    Dim AllProducts, ProdX, key
+    Dim arrKeys, Arr, arrTmpSids()
+    Dim sSid
     Dim i
-    sActiveSub = "FindAllProducts" : sErrHnd = ""
+    sActiveSub = "FindAllProducts" : sErrHnd = "" 
     On Error Resume Next
+    
+    'Cache ARP entries
+    If RegEnumKey (HKLM, REG_ARP, arrKeys) Then
+        For Each key in arrKeys
+            If NOT dicArp.Exists(key) Then dicArp.Add key, REG_ARP & key
+        Next 'key
+    End If
     
     'Build an array of all applications registered to Windows Installer
     'Iterate products depending of available WI version
@@ -4674,7 +4848,7 @@ Sub FindAllProducts
     Case 3, 4, 5, 6
         sErrHnd = "_ErrorHandler3x" : Err.Clear
         
-        Set AllProducts = oMsi.ProductsEx("",USERSID_EVERYONE,MSIINSTALLCONTEXT_ALL) : CheckError sActiveSub,sErrHnd
+        Set AllProducts = oMsi.ProductsEx("",USERSID_EVERYONE,MSIINSTALLCONTEXT_ALL) : CheckError sActiveSub,sErrHnd 
         If CheckObject(AllProducts) Then WritePLArrayEx 3, arrAllProducts, AllProducts, Null, Null
     Case 2
         'Only available for backwards compatibility reasons
@@ -4687,7 +4861,10 @@ Sub FindAllProducts
     Case Else
         'Not Handled - Not Supported
     End Select
+    
+    GetC2Rv2VersionsActive
     FindRegProducts MSIINSTALLCONTEXT_C2RV2
+    FindRegProducts MSIINSTALLCONTEXT_C2RV3
 
     InitMasterArray
     Set dicProducts = CreateObject("Scripting.Dictionary")
@@ -4698,12 +4875,11 @@ Sub FindAllProducts
     'Build an array of all virtualized applications (Click2Run)
     FindV1VirtualizedProducts
     FindV2VirtualizedProducts
+    FindV3VirtualizedProducts
 End Sub
 '=======================================================================================================
 
 Sub FindAllProducts_ErrorHandler3x
-    Dim sActiveSub, sErrHnd 
-    sActiveSub = "FindAllProducts_ErrorHandler3x" : sErrHnd = ""
     
     Cachelog LOGPOS_REVITEM,LOGHEADING_NONE,ERR_CATEGORYERROR,ERR_PRODUCTSEXALL & DOT & " Error Details: " & _
     Err.Source & " " & Hex( Err ) & ": " & Err.Description
@@ -4719,7 +4895,7 @@ End Sub
 '=======================================================================================================
 
 Sub FindProducts(sSid, iContext)
-    Dim sActiveSub, sErrHnd
+    Dim sActiveSub, sErrHnd 
     Dim Arr, Products
     sActiveSub = "FindProducts" : sErrHnd = ""
     On Error Resume Next
@@ -4750,10 +4926,10 @@ End Sub
 
 'General entry point for getting a list of products from the registry.
 Sub FindRegProducts (iContext)
-    Dim arrKeys,arrTmpKeys
-    Dim sSid,sSubKeyName,sUMSids,sProd,sTmpProd
+    Dim arrKeys, arrTmpKeys
+    Dim sSid, sSubKeyName, sUMSids, sProd, sTmpProd, sVer
     Dim hDefKey
-    Dim n,iProdCnt,iProdFind,iProdTotal
+    Dim n, iProdCnt, iProdFind, iProdTotal
     On Error Resume Next
 
     Select Case iContext
@@ -4767,7 +4943,13 @@ Sub FindRegProducts (iContext)
     Case MSIINSTALLCONTEXT_C2RV2
         sSid = MACHINESID
         hDefKey = GetRegHive(iContext, sSid, False)
-        sSubKeyName = GetRegConfigKey("", iContext, sSid, False)
+        sSubKeyName = REG_OFFICE & "15.0" & REG_C2RVIRT_HKLM & REG_GLOBALCONFIG & "S-1-5-18\Products\"
+        FindRegProductsEx hDefKey, sSubKeyName, sSid, iContext, arrMVProducts
+    
+    Case MSIINSTALLCONTEXT_C2RV3
+        sSid = MACHINESID
+        hDefKey = GetRegHive(iContext, sSid, False)
+        sSubKeyName = REG_OFFICE & "ClickToRun\REGISTRY\MACHINE\" & REG_GLOBALCONFIG & "S-1-5-18\Products\"
         FindRegProductsEx hDefKey, sSubKeyName, sSid, iContext, arrMVProducts
     
     Case MSIINSTALLCONTEXT_USERUNMANAGED
@@ -4873,36 +5055,34 @@ Dim iVCnt
 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<ProductCode> -> InstallLocation = "Virtualized Application"
 Set dicVirtProd = CreateObject("Scripting.Dictionary")
 
-If RegEnumKey (HKLM,REG_ARP,arrKeys) Then
-    For Each Key in arrKeys
-        If Len(Key)=38 Then
-            If IsOfficeProduct(Key) Then
-                If RegReadValue(HKLM,REG_ARP&"\"&Key,"CVH",sValue,"REG_DWORD") Then
-                    If sValue = "1" Then
-                        If NOT dicVirtProd.Exists(Key) Then dicVirtProd.Add Key,Key
-                    End If
+For Each Key in dicArp.Keys
+    If Len(Key) = 38 Then
+        If IsOfficeProduct(Key) Then
+            If RegReadValue(HKLM, REG_ARP & Key, "CVH", sValue, "REG_DWORD") Then
+                If sValue = "1" Then
+                    If NOT dicVirtProd.Exists(Key) Then dicVirtProd.Add Key,Key
                 End If
             End If
         End If
-    Next 'Key
-End If
+    End If
+Next 'Key
 
 'Fill the virtual products array 
 If dicVirtProd.Count > 0 Then
-    ReDim arrVirtProducts(dicVirtProd.Count-1,UBOUND_VIRTPROD)
+    ReDim arrVirtProducts(dicVirtProd.Count -1, UBOUND_VIRTPROD)
     iVCnt = 0
     For Each VProd in dicVirtProd.Keys
         'ProductCode
         arrVirtProducts(iVCnt,COL_PRODUCTCODE) = VProd
         
         'ProductName
-        If RegReadValue(HKLM,REG_ARP&"\"&VProd,"DisplayName",sValue,"REG_SZ") Then
+        If RegReadValue(HKLM, REG_ARP & VProd, "DisplayName", sValue, "REG_SZ") Then
             arrVirtProducts(iVCnt,COL_PRODUCTNAME) = sValue
         End If
 
         'DisplayVersion
-        If RegReadValue(HKLM,REG_ARP&"\"&VProd,"DisplayVersion",sValue,"REG_SZ") Then
-            arrVirtProducts(iVCnt,VIRTPROD_PRODUCTVERSION) = sValue
+        If RegReadValue(HKLM, REG_ARP & VProd, "DisplayVersion", sValue, "REG_SZ") Then
+            arrVirtProducts(iVCnt, VIRTPROD_PRODUCTVERSION) = sValue
         End If
 
         If IsOfficeProduct(VProd) Then
@@ -4925,40 +5105,147 @@ End Sub 'FindV1VirtualizedProducts
 '-------------------------------------------------------------------------------
 '   FindV2VirtualizedProducts
 '
-'   Locate virtualized O15 products
+'   Locate virtualized C2R_v2 products
 '-------------------------------------------------------------------------------
 Sub FindV2VirtualizedProducts
-    Dim ArpItem, VProd, ConfigProd, culture, child, name, key, subKey
-    Dim sSubKeyName, sCurKey, sConfigName, sValue, sChild
-    Dim sPackageGuid, sVersion, sVersionFallback, sFileName, sKeyComponents
+    Dim ArpItem, VProd, ConfigProd
+    Dim component, culture, child, name, key, subKey, prod
+    Dim sSubKeyName, sConfigName, sValue, sChild
+    Dim sCurKey, sCurKeyL0, sCurKeyL1, sCurKeyL2, sCurKeyL3, sKey
+    Dim sVersion, sVersionFallback, sFileName, sKeyComponents
+    Dim sActiveConfiguration, sProd, sCult
     Dim iVCnt
-    Dim dicVirt2Prod
-    Dim arrKeys, arrConfigProducts, arrVersion, arrCultures, arrChildPackages
-    Dim arrNames, arrTypes, arrScenario, arrSubKeys
-    Dim fUninstallString
+    Dim dicVirt2Prod, dicVirt2ConfigID
+    Dim arrKeys, arrConfigProducts, arrVersion, arrCultures, arrChildPackages, arrSubKeys
+    Dim arrNames, arrTypes, arrScenario, arrKeyComponents, arrComponentData
+    Dim fUninstallString, fIsSP1, fC2RPolEnabled
+
+	Const REG_C2R				    = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\"
+   	Const REG_C2RCONFIGURATION	    = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\Configuration\"
+   	Const REG_C2RPROPERTYBAG        = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\propertyBag\"
+   	Const REG_C2RSCENARIO           = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\Scenario\"
+   	Const REG_C2RUPDATES            = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\Updates\"
+	Const REG_C2RPRODUCTIDS		    = "SOFTWARE\Microsoft\Office\15.0\ClickToRun\ProductReleaseIDs\"
+	Const REG_C2RUPDATEPOL		    = "SOFTWARE\Policies\Microsoft\Office\15.0\Common\OfficeUpdate\"
 
     On Error Resume Next
 
     Set dicVirt2Prod = CreateObject ("Scripting.Dictionary")
+    Set dicVirt2ConfigID = CreateObject("Scripting.Dictionary")
+    fIsSP1 = False
+    fC2RPolEnabled = False
+    ' extend ARP dic to contain virt2 references
+    sKey = REG_C2R & "REGISTRY\MACHINE\" & REG_ARP
+    If RegEnumKey (HKLM, sKey, arrKeys) Then
+        For Each key in arrKeys
+            If NOT dicArp.Exists(key) Then dicArp.Add key, sKey & key
+        Next 'key
+    End If
+    
+    'Integration PackageGUID
+    If RegReadValue(HKLM, REG_C2R, "PackageGUID", sValue, REG_SZ) Then
+    	sPackageGuid = "{" & sValue & "}"
+        dicC2RPropV2.Add STR_REGPACKAGEGUID, sValue
+        dicC2RPropV2.Add STR_PACKAGEGUID, sPackageGuid
+    Else
+        If RegEnumKey(HKLM, REG_C2R & "appvMachineRegistryStore\Integration\Packages\", arrKeys) Then
+    	    sPackageGuid = sValue
+    	    sValue = Replace(sValue, "{", "")
+    	    sValue = Replace(sValue, "}", "")
+            dicC2RPropV2.Add STR_REGPACKAGEGUID, sValue
+            dicC2RPropV2.Add STR_PACKAGEGUID, sPackageGuid
+        End If
+
+    End If
+
+    'ActiveConfiguration & ConfigProducts
+    If RegReadValue(HKLM, REG_C2RPRODUCTIDS, "ActiveConfiguration", sActiveConfiguration, REG_SZ) Then
+        'Config IDs
+        'Try (but not rely on) the ProductRleaseIds entry in Configuration
+        If RegReadValue(HKLM, REG_C2RCONFIGURATION, "ProductReleaseIds", sValue, REG_SZ) Then
+            For Each prod in Split(sValue, ",")
+                If NOT dicVirt2ConfigID.Exists(prod) Then
+                    dicVirt2ConfigID.Add prod, prod
+                End If
+            Next 'prod
+        End If
+
+        If RegEnumKey(HKLM, REG_C2RPRODUCTIDS & "Active", arrConfigProducts) Then
+    	    For Each prod In arrConfigProducts
+    		    sProd = prod
+    		    Select Case LCase(sProd)
+    		    Case "culture", "stream"
+    		    Case Else
+	                'add to ConfigID collection
+	                If NOT dicVirt2ConfigID.Exists(sProd) Then
+	                    dicVirt2ConfigID.Add sProd, prod
+	                End If
+    		    End Select
+    	    Next 'prod
+        End If 'arrConfigProducts
+
+        'Shared ProductVersion
+        If RegReadStringValue(HKLM, REG_C2RPRODUCTIDS & "Active\culture\", "x-none", sVersionFallback) Then
+            dicC2RPropV2.Add STR_VERSION, sVersionFallback
+        End If
+    	
+        'Cultures
+        If RegEnumValues (HKLM, REG_C2RPRODUCTIDS & "Active\culture", arrCultures, arrTypes) Then
+    		For Each culture in arrCultures
+    			sCult = culture
+    			Select Case LCase(sCult)
+    			Case "x-none"
+    			Case Else
+	                'add to ConfigID collection
+	                If NOT dicVirt2Cultures.Exists(sCult) Then
+	                	dicVirt2Cultures.Add sCult, culture
+	                End If
+    			End Select
+    		Next 'culture
+        End If 'cultures
+    End If 'ActiveConfiguration
+
     ' enum ARP to identify configuration products
-    RegEnumKey HKLM, REG_ARP, arrKeys
-    ' count loop
-    For Each ArpItem in arrKeys
-        ' filter on Office 15 products
+    
+    For Each ArpItem in dicArp.Keys
+        ' filter on C2Rv2 products
         sCurKey = REG_ARP & ArpItem & "\"
         fUninstallString = RegReadValue(HKLM, sCurKey, "UninstallString", sValue, "REG_SZ")
-        If UCase(Left(ArpItem, 19)) = UCase(OREGREFC2R15) OR (fUninstallString AND InStr(UCase(sValue), UCase(OREGREFC2R15)) > 0) Then
-            If NOT dicVirt2Prod.Exists(ArpItem) Then dicVirt2Prod.Add ArpItem, sCurKey
+        If InStr(LCase(sValue), "microsoft office 15") > 0 Then
+        	For Each key In dicVirt2ConfigID.Keys
+        		If InStr(sValue, key) > 0 Then
+		            If NOT dicVirt2Prod.Exists(ArpItem) Then
+		            	dicVirt2Prod.Add ArpItem, sCurKey
+		            End If
+        		End If
+        	Next
+            prod = Mid(sValue, InStr(sValue, "productsdata ") + 13)
+            prod = Trim(prod)
+            prod = Trim(Mid(prod, InStrRev(prod, " ")))
+            prod = Replace(prod, "productstoremove=", "")
+            If InStr(prod, "_") > 0 Then
+                prod = Left(prod, InStr(prod, "_") - 1)
+            End If
+	        If NOT dicVirt2Prod.Exists(ArpItem) Then 
+	            dicVirt2Prod.Add ArpItem, sCurKey
+	        End If
+
         End If
     Next 'ArpItem
 
-    'Fill the virtual products array 
+    'Fill the v2 virtual products array 
     If dicVirt2Prod.Count > 0 Then
-        RegReadStringValue HKLM, REG_C2RACTIVEPRODS & "culture", "x-none", sVersionFallback
-
-        ' Scenario key state
+        ReDim arrVirt2Products(dicVirt2Prod.Count - 1, UBOUND_VIRTPROD)
+        iVCnt = 0
+        ReDim arrVirt2Products(dicVirt2Prod.Count - 1, UBOUND_VIRTPROD)
+        iVCnt = 0
+        fIsSP1 = (CompareVersion(sVersionFallback, "15.0.4569.1506", True) > -1)
+        fC2RPolEnabled = (CompareVersion(sVersionFallback, "15.0.4605.1003", True) > -1)
+        
+        'Global settings - applicable for all v2 products
+        '------------------------------------------------
+        'Scenario key state(s)
         If RegEnumKey(HKLM, REG_C2RSCENARIO, arrKeys) Then
-            'new logic
             For Each key in arrKeys
                 If RegEnumKey (HKLM, REG_C2RSCENARIO & key, arrSubKeys) Then
                     For Each subKey in arrSubKeys
@@ -4966,100 +5253,234 @@ Sub FindV2VirtualizedProducts
                             For Each name in arrNames
                                 RegReadValue HKLM, REG_C2RSCENARIO & key & "\" & subKey, name, sValue, "REG_SZ"
                                 If InStr (name, ":") > 0 Then name = Left (name, InStr(name , ":") - 1)
-                                If NOT dicScenario.Exists(key & "\" & name) Then dicScenario.Add key & "\" & name, sValue
+                                If NOT dicScenarioV2.Exists(key & "\" & name) Then dicScenarioV2.Add key & "\" & name, sValue
                             Next 'name
                         End If
                     Next 'subKey
                 End If
-                
             Next 'name
         Else
             If RegEnumValues(HKLM, REG_C2RSCENARIO, arrNames, arrTypes) Then
                 For Each name in arrNames
                     RegReadValue HKLM, REG_C2RSCENARIO, name, sValue, "REG_DWORD"
-                    If NOT dicScenario.Exists(name) Then dicScenario.Add name, sValue
+                    If NOT dicScenarioV2.Exists(name) Then dicScenarioV2.Add name, sValue
                 Next 'name
             End If
         End If
 
-        ' Integration PackageGUID
-        If RegEnumKey(HKLM, REG_C2R_15 & "appvMachineRegistryStore\Integration\Packages", arrKeys) Then sProductCode_C2R_15 = arrKeys(0)
+        'Architecture (bitness)
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "Platform", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_PLATFORM, sValue
+        ElseIf RegReadValue (HKLM, REG_C2RPROPERTYBAG, "platform", sValue, "REG_SZ") Then 
+            dicC2RPropV2.Add STR_PLATFORM, sValue
+        Else
+            dicC2RPropV2.Add STR_PLATFORM, "Error"
+        End If
+            
+        'SCA
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "SharedComputerLicensing", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_SCA, sValue
+        Else
+            dicC2RPropV2.Add STR_SCA, STR_NOTCONFIGURED
+        End If
 
-        ReDim arrVirt2Products(dicVirt2Prod.Count - 1, UBOUND_VIRTPROD)
-        iVCnt = 0
+        'CDNBaseUrl
+        If RegReadValue(HKLM, REG_C2RCONFIGURATION, "CDNBaseUrl", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_CDNBASEURL, sValue
+            dicC2RPropV2.Add hAtS(Array("49","6E","73","74","61","6C","6C","53","6F","75","72","63","65","20","42","72","61","6E","63","68")), GetBr(sValue)
+            'Last known InstallSource used
+            If RegReadValue (HKLM, REG_C2RSCENARIO & "Install\", "BaseUrl", sValue, "REG_SZ") Then
+                dicC2RPropV2.Add STR_LASTUSEDBASEURL, sValue
+            End If 
+        ElseIf RegReadValue (HKLM, REG_C2RPROPERTYBAG, "wwwbaseurl", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_CDNBASEURL, sValue
+            dicC2RPropV2.Add hAtS(Array("49","6E","73","74","61","6C","6C","53","6F","75","72","63","65","20","42","72","61","6E","63","68")), GetBr(sValue)
+        Else
+            dicC2RPropV2.Add STR_CDNBASEURL, "Error"
+        End If
+
+        'UpdatesEnabled
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "UpdatesEnabled", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_UPDATESENABLED, sValue
+        Else
+            dicC2RPropV2.Add STR_UPDATESENABLED, "True"
+        End If
+
+        'UpdatesEnabled Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "enableautomaticupdates", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_POLUPDATESENABLED, sValue
+        Else
+            dicC2RPropV2.Add STR_POLUPDATESENABLED, STR_NOTCONFIGURED
+        End If
+            
+        'UpGradeEnabled Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "enableautomaticupgrade", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_POLUPGRADEENABLED, sValue
+        Else
+            dicC2RPropV2.Add STR_POLUPGRADEENABLED, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateUrl / Path
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "UpdateUrl", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_UPDATELOCATION, sValue
+        ElseIf RegReadValue (HKLM, REG_C2RPROPERTYBAG, "UpdateUrl", sValue, "REG_SZ") Then
+                dicC2RPropV2.Add STR_UPDATELOCATION, sValue
+        Else
+            dicC2RPropV2.Add STR_UPDATELOCATION, STR_NOTCONFIGURED
+        End If
+        
+        'UpdateUrl / Path Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatepath", sValue, "REG_SZ") AND fC2RPolEnabled Then
+            dicC2RPropV2.Add STR_POLUPDATELOCATION, sValue
+        Else
+            dicC2RPropV2.Add STR_POLUPDATELOCATION, STR_NOTCONFIGURED
+        End If
+
+        'Winning Update Location
+        'Default to CDNBaseUrl
+        sValue = dicC2RPropV2.Item (STR_CDNBASEURL)
+        If NOT dicC2RPropV2.Item (STR_UPDATELOCATION) = STR_NOTCONFIGURED Then sValue = dicC2RPropV2.Item (STR_UPDATELOCATION)
+        If NOT dicC2RPropV2.Item (STR_POLUPDATELOCATION) = STR_NOTCONFIGURED Then sValue = dicC2RPropV2.Item (STR_POLUPDATELOCATION)
+        If UCASE (dicC2RPropV2.Item (STR_UPDATESENABLED)) = "FALSE" Then sValue = "-"
+        If UCASE (dicC2RPropV2.Item (STR_POLUPDATESENABLED)) = "FALSE" Then sValue = "-"
+        If NOT GetBr (sValue) = "Custom" Then sValue = sValue & " (" & GetBr (sValue) & ")"
+        dicC2RPropV2.Add STR_USEDUPDATELOCATION, sValue
+
+         'UpdateVersion
+        If RegReadValue (HKLM, REG_C2R & "Updates\", "UpdateToVersion", sValue, "REG_SZ") Then
+            If sValue = "" Then sValue = STR_NOTCONFIGURED
+            dicC2RPropV2.Add STR_UPDATETOVERSION, sValue
+        ElseIf RegReadValue (HKLM, REG_C2RPROPERTYBAG, "UpdateToVersion", sValue, "REG_SZ") Then
+                If sValue = "" Then sValue = STR_NOTCONFIGURED
+                dicC2RPropV2.Add STR_UPDATETOVERSION, sValue
+        Else
+            dicC2RPropV2.Add STR_UPDATETOVERSION, STR_NOTCONFIGURED
+        End If
+        
+        'UpdateVersion Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatetargetversion", sValue, "REG_SZ") AND fC2RPolEnabled Then
+            dicC2RPropV2.Add STR_POLUPDATETOVERSION, sValue
+        Else
+            dicC2RPropV2.Add STR_POLUPDATETOVERSION, STR_NOTCONFIGURED
+        End If
+
+        'UpdateDeadline Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatedeadline", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_POLUPDATEDEADLINE, sValue
+        Else
+            dicC2RPropV2.Add STR_POLUPDATEDEADLINE, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateHideEnableDisableUpdates Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "hideenabledisableupdates ", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_POLHIDEUPDATECFGOPT, sValue
+        Else
+            dicC2RPropV2.Add STR_POLHIDEUPDATECFGOPT, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateNotifications Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "hideupdatenotifications ", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_POLUPDATENOTIFICATIONS, sValue
+        Else
+            dicC2RPropV2.Add STR_POLUPDATENOTIFICATIONS, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateThrottle
+        If RegReadValue (HKLM, REG_C2RUPDATES, "UpdatesThrottleValue", sValue, "REG_SZ") Then
+            dicC2RPropV2.Add STR_UPDATETHROTTLE, sValue
+        Else
+            dicC2RPropV2.Add STR_UPDATETHROTTLE, ""
+        End If
+            
+        'KeyComponentStates
+        sKeyComponents = GetKeyComponentStates(sPackageGuid, False)
+        arrKeyComponents = Split(sKeyComponents, ";")
+        For Each component in arrKeyComponents
+            arrComponentData = Split(component, ",")
+            If CheckArray(arrComponentData) Then
+                dicKeyComponentsV2.Add arrComponentData(0), component
+            End If
+        Next 'component
+
+        ' Loop for product specific details
         For Each VProd in dicVirt2Prod.Keys
+            
             'KeyName
-            arrVirt2Products(iVCnt,VIRTPROD_KEYNAME) = VProd
+            arrVirt2Products(iVCnt, VIRTPROD_KEYNAME) = VProd
 
             'ProductName
-            If RegReadValue(HKLM, REG_ARP & "\" & VProd, "DisplayName", sValue, "REG_SZ") Then arrVirt2Products(iVCnt,COL_PRODUCTNAME) = sValue
-            If NOT Len(sValue) > 0 Then arrVirt2Products(iVCnt,COL_PRODUCTNAME) = VProd
+            If RegReadValue(HKLM, REG_ARP & VProd, "DisplayName", sValue, "REG_SZ") Then arrVirt2Products(iVCnt, COL_PRODUCTNAME) = sValue
+            If NOT Len(sValue) > 0 Then arrVirt2Products(iVCnt, COL_PRODUCTNAME) = VProd
 
             'ConfigName
             fUninstallString = RegReadValue(HKLM, dicVirt2Prod.item(VProd), "UninstallString", sValue, "REG_SZ")
-            sValue = Mid(sValue, InStr(sValue, "productsdata ") + 13)
-            sValue = Trim(sValue)
-            sValue = Trim(Mid(sValue, InStrRev(sValue, " ")))
-            sValue = Replace(sValue, "productstoremove=", "")
-            If InStr(sValue, "_") > 0 Then
-                sValue = Left(sValue, InStr(sValue, "_") - 1)
-            End If
-            arrVirt2Products (iVCnt, VIRTPROD_CONFIGNAME) = sValue
+	        If InStr(LCase(sValue), "productstoremove=") > 0 Then
+	        	prod = ""
+	        	For Each key In dicVirt2ConfigID.Keys
+	        		If InStr(sValue, key) > 0 Then
+			            arrVirt2Products (iVCnt, VIRTPROD_CONFIGNAME) = key
+			            prod = key
+	        		End If
+	        	Next
+	        	If prod = "" Then
+                    prod = Mid(sValue, InStr(sValue, "productsdata ") + 13)
+                    prod = Trim(prod)
+                    prod = Trim(Mid(prod, InStrRev(prod, " ")))
+                    prod = Replace(prod, "productstoremove=", "")
+                    If InStr(prod, "_") > 0 Then
+                        prod = Left(prod, InStr(prod, "_") - 1)
+                    End If
+                    arrVirt2Products (iVCnt, VIRTPROD_CONFIGNAME) = prod
+                End If 'prod = ""
+            End If 'productstoremove
 
             'DisplayVersion
-            If RegReadValue (HKLM, REG_ARP & "\" & VProd, "DisplayVersion", sValue, "REG_SZ") Then 
-                arrVirt2Products(iVCnt,VIRTPROD_PRODUCTVERSION) = sValue
+            If RegReadValue (HKLM, REG_ARP & VProd, "DisplayVersion", sValue, "REG_SZ") Then 
+                arrVirt2Products(iVCnt, VIRTPROD_PRODUCTVERSION) = sValue
             Else
-                arrVirt2Products(iVCnt,VIRTPROD_PRODUCTVERSION) = sVersionFallback
+                arrVirt2Products(iVCnt, VIRTPROD_PRODUCTVERSION) = sVersionFallback
             End If
 
             'SP level
             If Len(arrVirt2Products(iVCnt, VIRTPROD_PRODUCTVERSION)) > 0 Then
                 arrVersion = Split(arrVirt2Products(iVCnt, VIRTPROD_PRODUCTVERSION),".")
                 If NOT fInitArrProdVer Then InitProdVerArrays
-                arrVirt2Products (iVCnt, VIRTPROD_SPLEVEL) = OVersionToSpLevel ("{90" & arrVersion(0) & "0000-000F-0000-0000-0000000FF1CE}", arrVersion(0), arrVirt2Products(iVCnt, VIRTPROD_PRODUCTVERSION)) 
-            End If
-
-            'Architecture (bitness)
-            If RegReadValue (HKLM, REG_C2RCONFIG_15, "Platform", sValue, "REG_SZ") Then
-                arrVirt2Products(iVCnt,VIRTPROD_BITNESS) = sValue
-            Else
-                RegReadValue HKLM, REG_C2RPROPERTYBAG, "platform", sValue, "REG_SZ"
-                arrVirt2Products(iVCnt,VIRTPROD_BITNESS) = sValue
+                arrVirt2Products (iVCnt, VIRTPROD_SPLEVEL) = OVersionToSpLevel ("{90150000-000F-0000-0000-0000000FF1CE}", arrVersion(0), arrVirt2Products(iVCnt, VIRTPROD_PRODUCTVERSION)) 
             End If
 
             'Child Packages
-            If RegEnumKey (HKLM, REG_C2RACTIVEPRODS, arrConfigProducts) Then
+            sCurKeyL0 = REG_C2RPRODUCTIDS & "Active\"
+            If RegEnumKey (HKLM, sCurKeyL0, arrConfigProducts) Then
                 For Each ConfigProd in arrConfigProducts
+                    sCurKeyL1 = sCurKeyL0 & ConfigProd
                     Select Case ConfigProd
                     Case "culture", "stream"
                         ' ignore
                     Case arrVirt2Products (iVCnt, VIRTPROD_CONFIGNAME)
-                        sCurKey = REG_C2RACTIVEPRODS & ConfigProd
-                        If RegEnumKey(HKLM, REG_C2RACTIVEPRODS & ConfigProd, arrCultures) Then
+                        If RegEnumKey(HKLM, sCurKeyL1, arrCultures) Then
                             For Each culture in arrCultures
-                                sCurKey = REG_C2RACTIVEPRODS & ConfigProd & "\" & culture
-                                RegReadValue HKLM, sCurKey, "Version", sValue, "REG_SZ"
-                                arrVirt2Products(iVCnt,VIRTPROD_CHILDPACKAGES) = arrVirt2Products(iVCnt,VIRTPROD_CHILDPACKAGES) & culture & " - " & sValue & ";"
-                                If RegEnumKey(HKLM, sCurKey, arrChildPackages) Then
+                                sCurKeyL2 = sCurKeyL1 & "\" & culture
+                                RegReadValue HKLM, sCurKeyL2, "Version", sValue, "REG_SZ"
+                                arrVirt2Products(iVCnt,VIRTPROD_CHILDPACKAGES) = arrVirt2Products(iVCnt, VIRTPROD_CHILDPACKAGES) & culture & " - " & sValue & ";"
+                                If RegEnumKey(HKLM, sCurKeyL2, arrChildPackages) Then
                                     For Each child in arrChildPackages
-                                        sCurKey = REG_C2RACTIVEPRODS & ConfigProd & "\" & culture & "\" & child
+                                        sCurKeyL3 = sCurKeyL2 & "\" & child
                                         sChild = "" : sPackageGuid = "" : sVersion = "" : sFileName = ""
-                                        RegReadValue HKLM, sCurKey, "PackageGuid", sPackageGuid, "REG_SZ"
+                                        RegReadValue HKLM, sCurKeyL3, "PackageGuid", sPackageGuid, "REG_SZ"
                                         If Len(sPackageGuid) > 0 Then
                                             sChild = "{" & sPackageGuid & "}" & " - "
                                             ' call component detection to allow correct mapping for C2R
                                             sKeyComponents = GetKeyComponentStates("{" & sPackageGuid & "}", True)
-                                            If NOT sKeyComponents = "" Then arrVirt2Products(iVCnt,VIRTPROD_KEYCOMPONENTS) = arrVirt2Products(iVCnt,VIRTPROD_KEYCOMPONENTS) & sKeyComponents & ";"
+                                            If NOT sKeyComponents = "" Then arrVirt2Products(iVCnt, VIRTPROD_KEYCOMPONENTS) = arrVirt2Products(iVCnt, VIRTPROD_KEYCOMPONENTS) & sKeyComponents & ";"
                                         End If
-                                        RegReadValue HKLM, sCurKey, "Version", sVersion, "REG_SZ"
+                                        RegReadValue HKLM, sCurKeyL3, "Version", sVersion, "REG_SZ"
                                         If Len(sVersion) > 0 Then sChild = sChild & sVersion & " - "
-                                        RegReadValue HKLM, sCurKey, "FileName", sFileName, "REG_SZ"
+                                        RegReadValue HKLM, sCurKeyL3, "FileName", sFileName, "REG_SZ"
                                         If Len(sFileName) > 0 Then
                                             sFileName = Replace(sFileName, ".zip", "")
                                             sChild = sChild & sFileName 
                                         End If
-                                        If NOT sChild = "" Then arrVirt2Products(iVCnt,VIRTPROD_CHILDPACKAGES) = arrVirt2Products(iVCnt,VIRTPROD_CHILDPACKAGES) & sChild & ";"
+                                        If NOT sChild = "" Then arrVirt2Products(iVCnt, VIRTPROD_CHILDPACKAGES) = arrVirt2Products(iVCnt, VIRTPROD_CHILDPACKAGES) & sChild & ";"
                                     Next 'child
                                 End If
                             Next 'culture
@@ -5076,6 +5497,511 @@ Sub FindV2VirtualizedProducts
 
 
 End Sub 'FindV2VirtualizedProducts
+
+'-------------------------------------------------------------------------------
+'   FindV3VirtualizedProducts
+'
+'   Locate virtualized C2R_v3 products
+'-------------------------------------------------------------------------------
+Sub FindV3VirtualizedProducts
+    Dim ArpItem, VProd, culture, name, key, subKey, prod, component
+    Dim sValue, sCurKey, sKey, sVersionFallback, sKeyComponents
+    Dim sActiveConfiguration, sProd, sCult
+    Dim iVCnt
+    Dim dicVirt3Prod, dicVirt3ConfigID
+    Dim arrKeys, arrConfigProducts, arrVersion, arrCultures
+    Dim arrNames, arrTypes, arrSubKeys, arrKeyComponents, arrComponentData
+    Dim fUninstallString
+    
+   	Const REG_C2RCONFIGURATION	    = "SOFTWARE\Microsoft\Office\ClickToRun\Configuration\"
+   	Const REG_C2RSCENARIO           = "SOFTWARE\Microsoft\Office\ClickToRun\Scenario\"
+   	Const REG_C2RUPDATES            = "SOFTWARE\Microsoft\Office\ClickToRun\Updates\"
+	Const REG_C2RPRODUCTIDS		    = "SOFTWARE\Microsoft\Office\ClickToRun\ProductReleaseIDs\"
+	Const REG_C2R				    = "SOFTWARE\Microsoft\Office\ClickToRun\"
+	Const REG_C2RUPDATEPOL		    = "SOFTWARE\Policies\Microsoft\Office\16.0\Common\OfficeUpdate\"
+
+    On Error Resume Next
+
+    Set dicVirt3Prod = CreateObject ("Scripting.Dictionary")
+    Set dicVirt3ConfigID = CreateObject("Scripting.Dictionary")
+    ' extend ARP dic to contain virt3 references
+    sKey = REG_C2R & "REGISTRY\MACHINE\" & REG_ARP
+    If RegEnumKey (HKLM, sKey, arrKeys) Then
+        For Each key in arrKeys
+            If NOT dicArp.Exists(key) Then dicArp.Add key, sKey & key
+        Next 'key
+    End If
+    
+    'Integration PackageGUID
+    If RegReadValue(HKLM, REG_C2R, "PackageGUID", sValue, REG_SZ) Then
+    	sPackageGuid = "{" & sValue & "}"
+        dicC2RPropV3.Add STR_REGPACKAGEGUID, sValue
+        dicC2RPropV3.Add STR_PACKAGEGUID, sPackageGuid
+    End If
+    
+    'ActiveConfiguration & ConfigProducts
+    If RegReadValue(HKLM, REG_C2RPRODUCTIDS, "ActiveConfiguration", sActiveConfiguration, REG_SZ) Then
+        'Config IDs
+        'Try (but not rely on) the ProductRleaseIds entry in Configuration
+        If RegReadValue(HKLM, REG_C2RCONFIGURATION, "ProductReleaseIds", sValue, REG_SZ) Then
+            For Each prod in Split(sValue, ",")
+                If NOT dicVirt3ConfigID.Exists(prod) Then
+                    dicVirt3ConfigID.Add prod, prod
+                End If
+            Next 'prod
+        End If
+
+        If RegEnumKey(HKLM, REG_C2RPRODUCTIDS & sActiveConfiguration, arrConfigProducts) Then
+    	    For Each prod In arrConfigProducts
+    		    sProd = prod
+			    If InStr(sProd, ".16") > 0 Then sProd = Left(sProd, InStr(sProd, ".16") - 1)
+    		    Select Case LCase(sProd)
+    		    Case "culture", "stream"
+    		    Case Else
+	                'add to ConfigID collection
+	                If NOT dicVirt3ConfigID.Exists(sProd) Then
+	                    dicVirt3ConfigID.Add sProd, prod
+	                End If
+    		    End Select
+    	    Next 'prod
+        End If 'arrConfigProducts
+
+        'Shared ProductVersion
+        If RegReadStringValue(HKLM, REG_C2RPRODUCTIDS & sActiveConfiguration & "\culture\x-none.16\", "Version", sVersionFallback) Then
+            dicC2RPropV3.Add STR_VERSION, sVersionFallback
+        End If
+    	
+    	'Cultures
+        If RegEnumKey(HKLM, REG_C2RPRODUCTIDS & sActiveConfiguration & "\culture", arrCultures) Then
+    		For Each culture in arrCultures
+    			sCult = culture
+				If InStr(sCult, ".16") > 0 Then sCult = Left(sCult, InStr(sCult, ".16") - 1)
+    			Select Case LCase(sCult)
+    			Case "x-none"
+    			Case Else
+	                'add to ConfigID collection
+	                If NOT dicVirt3Cultures.Exists(sCult) Then
+	                	dicVirt3Cultures.Add sCult, culture
+	                End If
+    			End Select
+    		Next 'culture
+        End If 'cultures
+    End If 'ActiveConfiguration
+        
+    ' enum ARP to identify configuration products
+    For Each ArpItem in dicArp.Keys
+        ' filter on C2Rv3 products
+        sCurKey = REG_ARP & ArpItem & "\"
+        fUninstallString = RegReadValue(HKLM, sCurKey, "UninstallString", sValue, "REG_SZ")
+        If InStr(LCase(sValue), "productstoremove=") > 0 Then
+        	For Each key In dicVirt3ConfigID.Keys
+        		If InStr(sValue, key) > 0 Then
+		            If NOT dicVirt3Prod.Exists(ArpItem) Then
+		            	dicVirt3Prod.Add ArpItem, sCurKey
+		            End If
+        		End If
+        	Next
+        	prod = Mid(sValue, InStr(sValue, "productstoremove="))
+	        prod = Replace(prod, "productstoremove=", "")
+	        If InStr(prod, "_") > 0 Then
+	            prod = Left(prod, InStr(prod, "_") - 1)
+	        End If
+	        If InStr(prod, ".16") > 0 Then
+	            prod = Left(prod, InStr(prod, ".16") - 1)
+	            If NOT dicVirt3Prod.Exists(ArpItem) Then 
+	            	dicVirt3Prod.Add ArpItem, sCurKey
+	            End If
+	        End If
+        End If
+    Next 'ArpItem
+
+    'Fill the v3 virtual products array 
+    If dicVirt3Prod.Count > 0 Then
+        ReDim arrVirt3Products(dicVirt3Prod.Count - 1, UBOUND_VIRTPROD)
+        iVCnt = 0
+        
+        'Global settings - applicable for all v3 products
+        '------------------------------------------------
+        'Scenario key state(s)
+        If RegEnumKey(HKLM, REG_C2RSCENARIO, arrKeys) Then
+            For Each key in arrKeys
+                If RegEnumKey (HKLM, REG_C2RSCENARIO & key, arrSubKeys) Then
+                    For Each subKey in arrSubKeys
+                        If RegEnumValues(HKLM, REG_C2RSCENARIO & key & "\" & subKey, arrNames, arrTypes) Then
+                            For Each name in arrNames
+                                RegReadValue HKLM, REG_C2RSCENARIO & key & "\" & subKey, name, sValue, "REG_SZ"
+                                If InStr (name, ":") > 0 Then name = Left (name, InStr(name , ":") - 1)
+                                If NOT dicScenarioV3.Exists(key & "\" & name) Then dicScenarioV3.Add key & "\" & name, sValue
+                            Next 'name
+                        End If
+                    Next 'subKey
+                End If
+            Next 'name
+        End If
+        
+        'Architecture (bitness)
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "Platform", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_PLATFORM, sValue
+        Else 
+            dicC2RPropV3.Add STR_PLATFORM, "Error"
+        End If
+
+        'SCA
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "SharedComputerLicensing", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_SCA, sValue
+        Else
+            dicC2RPropV3.Add STR_SCA, STR_NOTCONFIGURED
+        End If
+
+        'CDNBaseUrl
+        If RegReadValue(HKLM, REG_C2RCONFIGURATION, "CDNBaseUrl", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_CDNBASEURL, sValue
+            dicC2RPropV3.Add hAtS(Array("49","6E","73","74","61","6C","6C","53","6F","75","72","63","65","20","42","72","61","6E","63","68")), GetBr(sValue)
+            'Last known InstallSource used
+            If RegReadValue(HKLM, REG_C2RSCENARIO & "Install", "BaseUrl", sValue, "REG_SZ") Then
+                dicC2RPropV3.Add STR_LASTUSEDBASEURL, sValue
+            End If 
+        Else
+            dicC2RPropV3.Add STR_CDNBASEURL, "Error"
+        End If
+            
+        'UpdatesEnabled
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "UpdatesEnabled", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_UPDATESENABLED, sValue
+        Else
+            dicC2RPropV3.Add STR_UPDATESENABLED, "True"
+        End If
+            
+        'UpdatesEnabled Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "enableautomaticupdates", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLUPDATESENABLED, sValue
+        Else
+            dicC2RPropV3.Add STR_POLUPDATESENABLED, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateBranch 
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "UpdateBranch", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_UPDATEBRANCH, sValue
+        Else
+            dicC2RPropV3.Add STR_UPDATEBRANCH, STR_NOTCONFIGURED
+        End If
+        
+        'UpdateBranch Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatebranch", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLUPDATEBRANCH, sValue
+        Else
+            dicC2RPropV3.Add STR_POLUPDATEBRANCH, STR_NOTCONFIGURED
+        End If
+
+        'UpdateUrl / Path
+        If RegReadValue (HKLM, REG_C2RCONFIGURATION, "UpdateUrl", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_UPDATELOCATION, sValue
+        Else
+            dicC2RPropV3.Add STR_UPDATELOCATION, STR_NOTCONFIGURED
+        End If
+        
+        'UpdateUrl / Path Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatepath", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLUPDATELOCATION, sValue
+        Else
+            dicC2RPropV3.Add STR_POLUPDATELOCATION, STR_NOTCONFIGURED
+        End If
+
+        'Winning Update Location
+        'Default to CDNBaseUrl
+        sValue = dicC2RPropV3.Item (STR_CDNBASEURL)
+        If NOT dicC2RPropV3.Item (STR_UPDATEBRANCH) = STR_NOTCONFIGURED Then sValue = dicC2RPropV3.Item (STR_UPDATEBRANCH)
+        If NOT dicC2RPropV3.Item (STR_UPDATELOCATION) = STR_NOTCONFIGURED Then sValue = dicC2RPropV3.Item (STR_UPDATELOCATION)
+        If NOT dicC2RPropV3.Item (STR_POLUPDATEBRANCH) = STR_NOTCONFIGURED Then sValue = dicC2RPropV3.Item (STR_POLUPDATEBRANCH)
+        If NOT dicC2RPropV3.Item (STR_POLUPDATELOCATION) = STR_NOTCONFIGURED Then sValue = dicC2RPropV3.Item (STR_POLUPDATELOCATION)
+        If UCASE (dicC2RPropV3.Item (STR_UPDATESENABLED)) = "FALSE" Then sValue = "-"
+        If UCASE (dicC2RPropV3.Item (STR_POLUPDATESENABLED)) = "FALSE" Then sValue = "-"
+        If NOT GetBr (sValue) = "Custom" Then sValue = sValue & " (" & GetBr (sValue) & ")"
+        dicC2RPropV3.Add STR_USEDUPDATELOCATION, sValue
+
+        'UpdateVersion
+        If RegReadValue (HKLM, REG_C2RUPDATES, "UpdateToVersion", sValue, "REG_SZ") Then
+            If sValue = "" Then sValue = STR_NOTCONFIGURED
+            dicC2RPropV3.Add STR_UPDATETOVERSION, sValue
+        Else
+            dicC2RPropV3.Add STR_UPDATETOVERSION, STR_NOTCONFIGURED
+        End If
+        
+        'UpdateVersion Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatetargetversion", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLUPDATETOVERSION, sValue
+        Else
+            dicC2RPropV3.Add STR_POLUPDATETOVERSION, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateDeadline Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "updatedeadline", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLUPDATEDEADLINE, sValue
+        Else
+            dicC2RPropV3.Add STR_POLUPDATEDEADLINE, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateHideEnableDisableUpdates Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "hideenabledisableupdates ", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLHIDEUPDATECFGOPT, sValue
+        Else
+            dicC2RPropV3.Add STR_POLHIDEUPDATECFGOPT, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateNotifications Policy
+        If RegReadValue (HKLM, REG_C2RUPDATEPOL, "hideupdatenotifications ", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_POLUPDATENOTIFICATIONS, sValue
+        Else
+            dicC2RPropV3.Add STR_POLUPDATENOTIFICATIONS, STR_NOTCONFIGURED
+        End If
+            
+        'UpdateThrottle
+        If RegReadValue (HKLM, REG_C2RUPDATES, "UpdatesThrottleValue", sValue, "REG_SZ") Then
+            dicC2RPropV3.Add STR_UPDATETHROTTLE, sValue
+        Else
+            dicC2RPropV3.Add STR_UPDATETHROTTLE, ""
+        End If
+
+        'KeyComponentStates
+        sKeyComponents = GetKeyComponentStates(sPackageGuid, False)
+        arrKeyComponents = Split(sKeyComponents, ";")
+        For Each component in arrKeyComponents
+            arrComponentData = Split(component, ",")
+            If CheckArray(arrComponentData) Then
+                dicKeyComponentsV3.Add arrComponentData(0), component
+
+            End If
+        Next 'component
+            
+        ' Loop for product specific details
+        For Each VProd in dicVirt3Prod.Keys
+
+            'KeyName
+            arrVirt3Products(iVCnt, VIRTPROD_KEYNAME) = VProd
+
+            'ProductName
+            If RegReadValue(HKLM, REG_ARP & VProd, "DisplayName", sValue, "REG_SZ") Then arrVirt3Products(iVCnt, COL_PRODUCTNAME) = sValue
+            If NOT Len(sValue) > 0 Then arrVirt3Products(iVCnt, COL_PRODUCTNAME) = VProd
+
+            'ConfigName
+            fUninstallString = RegReadValue(HKLM, dicVirt3Prod.item(VProd), "UninstallString", sValue, "REG_SZ")
+	        If InStr(LCase(sValue), "productstoremove=") > 0 Then
+	        	prod = ""
+	        	For Each key In dicVirt3ConfigID.Keys
+	        		If InStr(sValue, key) > 0 Then
+			            arrVirt3Products (iVCnt, VIRTPROD_CONFIGNAME) = key
+			            prod = key
+	        		End If
+	        	Next
+	        	If prod = "" Then
+		        	prod = Mid(sValue, InStr(sValue, "productstoremove="))
+			        prod = Replace(prod, "productstoremove=", "")
+			        If InStr(prod, "_") > 0 Then
+			            prod = Left(prod, InStr(prod, "_") - 1)
+			        End If
+			        If InStr(prod, ".16") > 0 Then
+			            prod = Left(prod, InStr(prod, ".16") - 1)
+			            arrVirt3Products (iVCnt, VIRTPROD_CONFIGNAME) = prod
+			        End If
+	        	End If
+	        End If
+	        
+            'DisplayVersion
+            If RegReadValue(HKLM, REG_ARP & VProd, "DisplayVersion", sValue, "REG_SZ") Then 
+                arrVirt3Products(iVCnt, VIRTPROD_PRODUCTVERSION) = sValue
+            Else
+                RegReadStringValue HKLM, REG_C2RPRODUCTIDS & sActiveConfiguration & "\culture\x-none.16\", "Version", sVersionFallback
+                arrVirt3Products(iVCnt, VIRTPROD_PRODUCTVERSION) = sVersionFallback
+            End If
+
+            'SP level
+            If Len(arrVirt3Products(iVCnt, VIRTPROD_PRODUCTVERSION)) > 0 Then
+                arrVersion = Split(arrVirt3Products(iVCnt, VIRTPROD_PRODUCTVERSION),".")
+                If NOT fInitArrProdVer Then InitProdVerArrays
+                arrVirt3Products (iVCnt, VIRTPROD_SPLEVEL) = OVersionToSpLevel ("{90160000-000F-0000-0000-0000000FF1CE}", arrVersion(0), arrVirt3Products(iVCnt, VIRTPROD_PRODUCTVERSION)) 
+            End If
+
+            iVCnt = iVCnt + 1
+        Next 'VProd
+    End If 'dicVirtProd > 0
+
+
+End Sub 'FindV3VirtualizedProducts
+
+'-------------------------------------------------------------------------------
+'   MapAppsToConfigProduct
+'
+'   Obtain the mapping of which apps are contained in a SKU based on the
+'   products ConfigID
+'   Pass in a dictionary object which and return the filled dic 
+'-------------------------------------------------------------------------------
+Sub MapAppsToConfigProduct(dicConfigIdApps, sConfigId, iVM)
+    Dim sMondo
+
+    dicConfigIdApps.RemoveAll
+    'sMondo = "MondoVolume"
+    sMondo = hAtS(Array("4D","6F","6E","64","6F","56","6F","6C","75","6D","65"))
+    Select Case sConfigId
+    Case sMondo
+        dicConfigIdApps.Add "Access", ""
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "Groove", ""
+        If iVM = 15 Then dicConfigIdApps.Add "InfoPath", ""
+        dicConfigIdApps.Add "Skype for Business", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Publisher", ""
+        dicConfigIdApps.Add "Word", ""
+        dicConfigIdApps.Add "Project", ""
+        dicConfigIdApps.Add "Visio", ""
+    Case "O365ProPlusRetail"
+        dicConfigIdApps.Add "Access", ""
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "Groove", ""
+        If iVM = 15 Then dicConfigIdApps.Add "InfoPath", ""
+        dicConfigIdApps.Add "Skype for Business", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Publisher", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "O365BusinessRetail"
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "Groove", ""
+        dicConfigIdApps.Add "Skype for Business", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Publisher", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "O365SmallBusPremRetail"
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "Groove", ""
+        dicConfigIdApps.Add "Skype for Business", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Publisher", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "VisioProRetail"
+        dicConfigIdApps.Add "Visio", ""
+    Case "ProjectProRetail"
+        dicConfigIdApps.Add "Project", ""
+    Case "AccessRetail"
+        dicConfigIdApps.Add "Access", ""
+    Case "ExcelRetail"
+        dicConfigIdApps.Add "Excel", ""
+    Case "GrooveRetail"
+        dicConfigIdApps.Add "Groove", ""
+    Case "HomeBusinessRetail"
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "HomeStudentRetail"
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "InfoPathRetail"
+        dicConfigIdApps.Add "InfoPath", ""
+    Case "LyncEntryRetail"
+        dicConfigIdApps.Add "Skype for Business", ""
+    Case "LyncRetail"
+        dicConfigIdApps.Add "Skype for Business", ""
+    Case "SkypeforBusinessEntryRetail"
+        dicConfigIdApps.Add "Skype for Business", ""
+    Case "SkypeforBusinessRetail"
+        dicConfigIdApps.Add "Skype for Business", ""
+    Case "ProfessionalRetail"
+        dicConfigIdApps.Add "Access", ""
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Publisher", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "O365HomePremRetail"
+        dicConfigIdApps.Add "Access", ""
+        dicConfigIdApps.Add "Excel", ""
+        dicConfigIdApps.Add "OneNote", ""
+        dicConfigIdApps.Add "Outlook", ""
+        dicConfigIdApps.Add "PowerPoint", ""
+        dicConfigIdApps.Add "Publisher", ""
+        dicConfigIdApps.Add "Word", ""
+    Case "OneNoteRetail"
+        dicConfigIdApps.Add "OneNote", ""
+    Case "OutlookRetail"
+        dicConfigIdApps.Add "Outlook", ""
+    Case "PowerPointRetail"
+        dicConfigIdApps.Add "PowerPoint", ""
+    Case "ProjectStdRetail"
+        dicConfigIdApps.Add "Project", ""
+    Case "PublisherRetail"
+        dicConfigIdApps.Add "Publisher", ""
+    Case "VisioStdRetail"
+        dicConfigIdApps.Add "Visio", ""
+    Case "WordRetail"
+        dicConfigIdApps.Add "Word", ""
+    End Select
+
+End Sub
+
+'-------------------------------------------------------------------------------
+'   GetC2Rv2VersionsActive
+'
+'   Obtain the version major for active C2Rv2 versions
+'   Returns an array with version numbers that have a C2Rv2 product
+'   An active version is detected if the registry entry 'x-none' is found at 
+'   HKLM\SOFTWARE\Microsoft\Office\XX.y\ClickToRun\ProductReleaseIDs\Active\culture
+'-------------------------------------------------------------------------------
+Sub GetC2Rv2VersionsActive()
+    Dim key, sValue, sActiveConfiguration
+    Dim arrKeys
+
+    On Error Resume Next
+    
+    If RegEnumKey (HKLM, "Software\Microsoft\Office", arrKeys) Then
+        For Each key in arrKeys
+            Select Case LCase(key)
+            Case "15.0"
+                If RegReadValue (HKLM, "Software\Microsoft\Office\" & key & "\ClickToRun\ProductReleaseIDs\Active\culture", "x-none", sValue, "REG_SZ") Then
+                    If Not dicActiveC2Rv2Versions.Exists(sValue) Then dicActiveC2Rv2Versions.Add sValue, Left(sValue, 2)
+                End If
+            Case "clicktorun"
+		        If RegReadValue(HKLM, "Software\Microsoft\Office\" & key & "\ProductReleaseIDs", "ActiveConfiguration", sActiveConfiguration, "REG_SZ") Then
+		        	If RegReadValue(HKLM, "Software\Microsoft\Office\" & key & "\ProductReleaseIDs\" & sActiveConfiguration & "\culture\x-none.16", "Version", sValue, "REG_SZ") Then
+	                    If Not dicActiveC2Rv2Versions.Exists(sValue) Then dicActiveC2Rv2Versions.Add sValue, Left(sValue, 2)
+                    End If
+                End If
+            End Select
+        Next
+    End If
+
+End Sub 'GetC2Rv2VersionsActive
+
+'-------------------------------------------------------------------------------
+'   GetBr
+'
+'-------------------------------------------------------------------------------
+Function GetBr(sValue)
+    Dim sCh0, sCh1, sCh2, sCh3, sCh4, sBr
+
+    sBr = hAtS(Array("43","75","73","74","6F","6D"))
+    sCh0 = hAtS(Array("33","39","31","36","38","44","37","45","2D","30","37","37","42","2D","34","38","45","37","2D","38","37","32","43","2D","42","32","33","32","43","33","45","37","32","36","37","35"))
+    sCh1 = hAtS(Array("34","39","32","33","35","30","66","36","2D","33","61","30","31","2D","34","66","39","37","2D","62","39","63","30","2D","63","37","63","36","64","64","66","36","37","64","36","30"))
+    sCh2 = hAtS(Array("36","34","32","35","36","61","66","65","2D","66","35","64","39","2D","34","66","38","36","2D","38","39","33","36","2D","38","38","34","30","61","36","61","34","66","35","62","65"))
+    sCh3 = hAtS(Array("62","38","66","39","62","38","35","30","2D","33","32","38","64","2D","34","33","35","35","2D","39","31","34","35","2D","63","35","39","34","33","39","61","30","63","34","63","66"))
+    sCh4 = hAtS(Array("37","66","66","62","63","36","62","66","2D","62","63","33","32","2D","34","66","39","32","2D","38","39","38","32","2D","66","39","64","64","31","37","66","64","33","31","31","34"))
+    If InStr(sValue, sCh0) > 0 Then sBr = hAtS(Array("4F","31","35","20","50","55"))
+    If InStr(sValue, sCh1) > 0 Then sBr = hAtS(Array("43","75","72","72","65","6E","74","20","28","43","42","29"))
+    If InStr(sValue, sCh2) > 0 Then sBr = hAtS(Array("49","6E","73","69","64","65","72","73","20","28","50","72","65","76","69","65","77","29"))
+    If InStr(sValue, sCh3) > 0 Then sBr = hAtS(Array("46","69","72","73","74","20","52","65","6C","65","61","73","65","20","42","75","73","69","6E","65","73","73","20","28","46","52","20","43","42","42","29"))
+    If InStr(sValue, sCh4) > 0 Then sBr = hAtS(Array("42","75","73","69","6E","65","73","73","20","28","43","42","42","29"))
+    GetBr = sBr
+End Function
 
 '-------------------------------------------------------------------------------
 '   GetKeyComponentStates
@@ -5097,8 +6023,11 @@ Function GetKeyComponentStates(sProductCode, fVirtualized)
     On Error Resume Next
     sReturn = ""
     GetKeyComponentStates = sReturn
-    iVM = GetVersionMajor(sProductCode)
 	If IsOfficeProduct(sProductCode) Then
+        iVM = GetVersionMajor(sProductCode)
+        If sProductCode = sPackageGuid Then
+
+        End If
         If iVM < 12 Then 
             sSkuId = Mid(sProductCode, 4, 2)
             fIsWW = True
@@ -5106,23 +6035,23 @@ Function GetKeyComponentStates(sProductCode, fVirtualized)
             sSkuId = Mid(sProductCode, 11, 4)
             fIsWW = (Mid(sProductCode, 16, 4) = "0000")
         End If
+        If sProductCode = sPackageGuid Then
+            fIsWW = True
+            If dicC2RPropV2.Count > 0 Then iVM = 15
+            If dicC2RPropV3.Count > 0 Then iVM = 16
+        End If
     End If
     If NOT fIsWW Then Exit Function 
 	
     sComponents = GetCoreComponentCode(sSkuId, iVM, fVirtualized)
     arrComponents = Split(sComponents, ";")
     sProd = sProductCode
-    If fVirtualized Then
-        Select Case iVM
-        Case 15
-            sProd = UCase(sProductCode_C2R_15)
-        End Select
-    End If
+    If fVirtualized Then sProd = UCase(dicProductCodeC2R.Item(iVM))
 
     ' get the component data registered to the product
     For Each component in arrComponents
         If dicKeyComponents.Exists (component) Then
-            If InStr (UCase(dicKeyComponents.Item (component)), sProd) > 0 Then
+            If InStr (UCase(dicKeyComponents.Item (component)), UCase(sProd)) > 0 Then
                 sFeatureName = GetMsiFeatureName (component)
                 sName = GetApplicationName (sFeatureName)
                 sExeName = GetApplicationExeName (component)
@@ -5153,6 +6082,26 @@ Function GetCoreComponentCode (sSkuId, iVM, fVirtualized)
     sReturn = ""
     GetCoreComponentCode = sReturn
     Select Case iVM
+    Case 16
+        sReturn = Join(Array(CID_ACC16_64,CID_ACC16_32,CID_XL16_64,CID_XL16_32,CID_GRV16_64,CID_GRV16_32,CID_LYN16_64,CID_LYN16_32,CID_ONE16_64,CID_ONE16_32,CID_OL16_64,CID_OL16_32,CID_PPT16_64,CID_PPT16_32,CID_PRJ16_64,CID_PRJ16_32,CID_PUB16_64,CID_PUB16_32,CID_IP16_64,CID_VIS16_64,CID_VIS16_32,CID_WD16_64,CID_WD16_32,CID_SPD16_64,CID_SPD16_32,CID_MSO16_64,CID_MSO16_32), ";")
+        If fVirtualized Then
+            Select Case sSkuId
+            Case "0015" : sReturn = CID_ACC16_64 & ";" & CID_ACC16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Access
+            Case "0016","0029" : sReturn = CID_XL16_64 & ";" & CID_XL16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Excel
+            Case "0018" : sReturn = CID_PPT16_64 & ";" & CID_PPT16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'PowerPoint
+            Case "0019" : sReturn = CID_PUB16_64 & ";" & CID_PUB16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Publisher
+            Case "001A","00E0" : sReturn = CID_OL16_64 & ";" & CID_OL16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Outlook
+            Case "001B","002B" : sReturn = CID_WD16_64 & ";" & CID_WD16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Word
+            Case "0027" : sReturn = CID_PRJ16_64 & ";" & CID_PRJ16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Project
+            Case "0044" : sReturn = CID_IP16_64 & ";"  & CID_MSO16_64 & ";" & CID_MSO16_32 'InfoPath
+            Case "0017" : sReturn = CID_SPD16_64 & ";" & CID_SPD16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'SharePointDesigner
+            Case "0051","0053","0057" : sReturn = CID_VIS16_64 & ";" & CID_VIS16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Visio
+            Case "00A1","00A3" : sReturn = CID_ONE16_64 & ";" & CID_ONE16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'OneNote
+            Case "00BA" : sReturn = CID_GRV16_64 & ";" & CID_GRV16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Groove
+            Case "012B","012C" : sReturn = CID_LYN16_64 & ";" & CID_LYN16_32 & ";" & CID_MSO16_64 & ";" & CID_MSO16_32 'Lync
+            Case Else : sReturn = ""
+            End Select
+        End If
     Case 15
         sReturn = Join(Array(CID_ACC15_64,CID_ACC15_32,CID_XL15_64,CID_XL15_32,CID_GRV15_64,CID_GRV15_32,CID_LYN15_64,CID_LYN15_32,CID_ONE15_64,CID_ONE15_32,CID_OL15_64,CID_OL15_32,CID_PPT15_64,CID_PPT15_32,CID_PRJ15_64,CID_PRJ15_32,CID_PUB15_64,CID_PUB15_32,CID_IP15_64,CID_IP15_32,CID_VIS15_64,CID_VIS15_32,CID_WD15_64,CID_WD15_32,CID_SPD15_64,CID_SPD15_32,CID_MSO15_64,CID_MSO15_32), ";")
         If fVirtualized Then
@@ -5195,35 +6144,35 @@ Function GetMsiFeatureName (sComponentId)
     On Error Resume Next
     sReturn = ""
     Select Case sComponentId
-    Case CID_ACC15_64,CID_ACC15_32,CID_ACC14_64,CID_ACC14_32,CID_ACC12,CID_ACC11
+    Case CID_ACC16_64,CID_ACC16_32,CID_ACC15_64,CID_ACC15_32,CID_ACC14_64,CID_ACC14_32,CID_ACC12,CID_ACC11
         sReturn = "ACCESSFiles"
-    Case CID_XL15_64,CID_XL15_32,CID_XL14_64,CID_XL14_32,CID_XL12,CID_XL11
+    Case CID_XL16_64,CID_XL16_32,CID_XL15_64,CID_XL15_32,CID_XL14_64,CID_XL14_32,CID_XL12,CID_XL11
         sReturn = "EXCELFiles"
-    Case CID_GRV15_64,CID_GRV15_32
+    Case CID_GRV16_64,CID_GRV16_32,CID_GRV15_64,CID_GRV15_32
         sReturn = "GrooveFiles2"
     Case CID_GRV14_64,CID_GRV14_32,CID_GRV12
         sReturn = "GrooveFiles"
-    Case CID_LYN15_64,CID_LYN15_32
+    Case CID_LYN16_64,CID_LYN16_32,CID_LYN15_64,CID_LYN15_32
         sReturn = "Lync_CoreFiles"
-    Case CID_MSO15_64,CID_MSO14_64,CID_MSO15_32,CID_MSO14_32,CID_MSO12,CID_MSO11
+    Case CID_MSO16_64,CID_MSO16_32,CID_MSO15_64,CID_MSO15_32,CID_MSO14_64,CID_MSO14_32,CID_MSO12,CID_MSO11
         sReturn = "ProductFiles"
-    Case CID_ONE15_64,CID_ONE15_32,CID_ONE14_64,CID_ONE14_32,CID_ONE12,CID_ONE11
+    Case CID_ONE16_64,CID_ONE16_32,CID_ONE15_64,CID_ONE15_32,CID_ONE14_64,CID_ONE14_32,CID_ONE12,CID_ONE11
         sReturn = "OneNoteFiles"
-    Case CID_OL15_64,CID_OL15_32,CID_OL14_64,CID_OL14_32,CID_OL12,CID_OL11
+    Case CID_OL16_64,CID_OL16_32,CID_OL15_64,CID_OL15_32,CID_OL14_64,CID_OL14_32,CID_OL12,CID_OL11
         sReturn = "OUTLOOKFiles"
-    Case CID_PPT15_64,CID_PPT15_32,CID_PPT14_64,CID_PPT14_32,CID_PPT12,CID_PPT11
+    Case CID_PPT16_64,CID_PPT16_32,CID_PPT15_64,CID_PPT15_32,CID_PPT14_64,CID_PPT14_32,CID_PPT12,CID_PPT11
         sReturn = "PPTFiles"
-    Case CID_PRJ15_64,CID_PRJ15_32,CID_PRJ14_64,CID_PRJ14_32,CID_PRJ12,CID_PRJ11
+    Case CID_PRJ16_64,CID_PRJ16_32,CID_PRJ15_64,CID_PRJ15_32,CID_PRJ14_64,CID_PRJ14_32,CID_PRJ12,CID_PRJ11
         sReturn = "PROJECTFiles"
-    Case CID_PUB15_64,CID_PUB15_32,CID_PUB14_64,CID_PUB14_32,CID_PUB12,CID_PUB11
+    Case CID_PUB16_64,CID_PUB16_32,CID_PUB15_64,CID_PUB15_32,CID_PUB14_64,CID_PUB14_32,CID_PUB12,CID_PUB11
         sReturn = "PubPrimary"
-    Case CID_IP15_64,CID_IP15_32,CID_IP14_64,CID_IP14_32,CID_IP12,CID_IP11
+    Case CID_IP16_64,CID_IP15_64,CID_IP15_32,CID_IP14_64,CID_IP14_32,CID_IP12,CID_IP11
         sReturn = "XDOCSFiles"
-    Case CID_VIS15_64,CID_VIS15_32,CID_VIS14_64,CID_VIS14_32,CID_VIS12,CID_VIS11
+    Case CID_VIS16_64,CID_VIS16_32,CID_VIS15_64,CID_VIS15_32,CID_VIS14_64,CID_VIS14_32,CID_VIS12,CID_VIS11
         sReturn = "VisioCore"
-    Case CID_WD15_64,CID_WD15_32,CID_WD14_64,CID_WD14_32,CID_WD12,CID_WD11
+    Case CID_WD16_64,CID_WD16_32,CID_WD15_64,CID_WD15_32,CID_WD14_64,CID_WD14_32,CID_WD12,CID_WD11
         sReturn = "WORDFiles"
-    Case CID_SPD15_64,CID_SPD15_32,CID_SPD14_64,CID_SPD14_32,CID_SPD12
+    Case CID_SPD16_64,CID_SPD16_32,CID_SPD15_64,CID_SPD15_32,CID_SPD14_64,CID_SPD14_32,CID_SPD12
         sReturn = "WAC_CoreSPD"
     Case CID_SPD11
         sReturn = "FPClientFiles"
@@ -5242,34 +6191,20 @@ Function GetApplicationName (sFeatureName)
     On Error Resume Next
     sReturn = ""
     Select Case sFeatureName
-    Case "ACCESSFiles"
-        sReturn = "Access"
-    Case "EXCELFiles"
-        sReturn = "Excel"
-    Case "GrooveFiles2", "GrooveFiles"
-        sReturn = "Groove"
-    Case "Lync_CoreFiles"
-        sReturn = "Lync"
-    Case "OneNoteFiles"
-        sReturn = "OneNote"
-    Case "OUTLOOKFiles"
-        sReturn = "Outlook"
-    Case "PPTFiles"
-        sReturn = "PowerPoint"
-    Case "ProductFiles"
-        sReturn = "Mso"
-    Case "PROJECTFiles"
-        sReturn = "Project"
-    Case "PubPrimary"
-        sReturn = "Publisher"
-    Case "XDOCSFiles"
-        sReturn = "InfoPath"
-    Case "VisioCore"
-        sReturn = "Visio"
-    Case "WORDFiles"
-        sReturn = "Word"
-    Case "WAC_CoreSPD", "FPClientFiles"
-        sReturn = "SharePoint Designer"
+    Case "ACCESSFiles"                  : sReturn = "Access"
+    Case "EXCELFiles"                   : sReturn = "Excel"
+    Case "GrooveFiles2", "GrooveFiles"  : sReturn = "Groove"
+    Case "Lync_CoreFiles"               : sReturn = "Skype for Business"
+    Case "OneNoteFiles"                 : sReturn = "OneNote"
+    Case "OUTLOOKFiles"                 : sReturn = "Outlook"
+    Case "PPTFiles"                     : sReturn = "PowerPoint"
+    Case "ProductFiles"                 : sReturn = "Mso"
+    Case "PROJECTFiles"                 : sReturn = "Project"
+    Case "PubPrimary"                   : sReturn = "Publisher"
+    Case "XDOCSFiles"                   : sReturn = "InfoPath"
+    Case "VisioCore"                    : sReturn = "Visio"
+    Case "WORDFiles"                    : sReturn = "Word"
+    Case "WAC_CoreSPD", "FPClientFiles" : sReturn = "SharePoint Designer"
     End Select
     GetApplicationName = sReturn
 End Function 'GetApplicationName
@@ -5285,33 +6220,33 @@ Function GetApplicationExeName (sComponentId)
     On Error Resume Next
     sReturn = ""
     Select Case sComponentId
-    Case CID_ACC15_64,CID_ACC15_32,CID_ACC14_64,CID_ACC14_32,CID_ACC12,CID_ACC11
+    Case CID_ACC16_64,CID_ACC16_32,CID_ACC15_64,CID_ACC15_32,CID_ACC14_64,CID_ACC14_32,CID_ACC12,CID_ACC11
         sReturn = "MSACCESS.EXE"
-    Case CID_XL15_64,CID_XL15_32,CID_XL14_64,CID_XL14_32,CID_XL12,CID_XL11
+    Case CID_XL16_64,CID_XL16_32,CID_XL15_64,CID_XL15_32,CID_XL14_64,CID_XL14_32,CID_XL12,CID_XL11
         sReturn = "EXCEL.EXE"
-    Case CID_GRV15_64,CID_GRV15_32,CID_GRV14_64,CID_GRV14_32,CID_GRV12
+    Case CID_GRV16_64,CID_GRV16_32,CID_GRV15_64,CID_GRV15_32,CID_GRV14_64,CID_GRV14_32,CID_GRV12
         sReturn = "GROOVE.EXE"
-    Case CID_LYN15_64,CID_LYN15_32
+    Case CID_LYN16_64,CID_LYN16_32,CID_LYN15_64,CID_LYN15_32
         sReturn = "LYNC.EXE"
-    Case CID_MSO15_64,CID_MSO14_64,CID_MSO15_32,CID_MSO14_32,CID_MSO12,CID_MSO11
+    Case CID_MSO16_64,CID_MSO16_32,CID_MSO15_64,CID_MSO15_32,CID_MSO14_64,CID_MSO14_32,CID_MSO12,CID_MSO11
         sReturn = "MSO.DLL"
-    Case CID_ONE15_64,CID_ONE15_32,CID_ONE14_64,CID_ONE14_32,CID_ONE12,CID_ONE11
+    Case CID_ONE16_64,CID_ONE16_32,CID_ONE15_64,CID_ONE15_32,CID_ONE14_64,CID_ONE14_32,CID_ONE12,CID_ONE11
         sReturn = "ONENOTE.EXE"
-    Case CID_OL15_64,CID_OL15_32,CID_OL14_64,CID_OL14_32,CID_OL12,CID_OL11
+    Case CID_OL16_64,CID_OL16_32,CID_OL15_64,CID_OL15_32,CID_OL14_64,CID_OL14_32,CID_OL12,CID_OL11
         sReturn = "OUTLOOK.EXE"
-    Case CID_PPT15_64,CID_PPT15_32,CID_PPT14_64,CID_PPT14_32,CID_PPT12,CID_PPT11
+    Case CID_PPT16_64,CID_PPT16_32,CID_PPT15_64,CID_PPT15_32,CID_PPT14_64,CID_PPT14_32,CID_PPT12,CID_PPT11
         sReturn = "POWERPNT.EXE"
-    Case CID_PRJ15_64,CID_PRJ15_32,CID_PRJ14_64,CID_PRJ14_32,CID_PRJ12,CID_PRJ11
+    Case CID_PRJ16_64,CID_PRJ16_32,CID_PRJ15_64,CID_PRJ15_32,CID_PRJ14_64,CID_PRJ14_32,CID_PRJ12,CID_PRJ11
         sReturn = "WINPROJ.EXE"
-    Case CID_PUB15_64,CID_PUB15_32,CID_PUB14_64,CID_PUB14_32,CID_PUB12,CID_PUB11
+    Case CID_PUB16_64,CID_PUB16_32,CID_PUB15_64,CID_PUB15_32,CID_PUB14_64,CID_PUB14_32,CID_PUB12,CID_PUB11
         sReturn = "MSPUB.EXE"
-    Case CID_IP15_64,CID_IP15_32,CID_IP14_64,CID_IP14_32,CID_IP12,CID_IP11
+    Case CID_IP16_64,CID_IP15_64,CID_IP15_32,CID_IP14_64,CID_IP14_32,CID_IP12,CID_IP11
         sReturn = "INFOPATH.EXE"
-    Case CID_VIS15_64,CID_VIS15_32,CID_VIS14_64,CID_VIS14_32,CID_VIS12,CID_VIS11
+    Case CID_VIS16_64,CID_VIS16_32,CID_VIS15_64,CID_VIS15_32,CID_VIS14_64,CID_VIS14_32,CID_VIS12,CID_VIS11
         sReturn = "VISIO.EXE"
-    Case CID_WD15_64,CID_WD15_32,CID_WD14_64,CID_WD14_32,CID_WD12,CID_WD11
+    Case CID_WD16_64,CID_WD16_32,CID_WD15_64,CID_WD15_32,CID_WD14_64,CID_WD14_32,CID_WD12,CID_WD11
         sReturn = "WINWORD.EXE"
-    Case CID_SPD15_64,CID_SPD15_32,CID_SPD14_64,CID_SPD14_32,CID_SPD12
+    Case CID_SPD16_64,CID_SPD16_32,CID_SPD15_64,CID_SPD15_32,CID_SPD14_64,CID_SPD14_32,CID_SPD12
         sReturn = "SPDESIGN.EXE"
     Case CID_SPD11
         sReturn = "FRONTPG.EXE"
@@ -5511,6 +6446,8 @@ Function TranslateObjContext(iContext)
         sContext = "All"
     Case MSIINSTALLCONTEXT_C2RV2 '8
         sContext = "Machine C2Rv2"
+    Case MSIINSTALLCONTEXT_C2RV3 '15
+        sContext = "Machine C2Rv3"
     Case Else
         sContext = "Unknown"
 
@@ -5596,9 +6533,11 @@ Sub WritePLArrayEx(iSource,Arr,Obj,iContext,sSid)
         ' Virtual flag
             Arr(i, COL_VIRTUALIZED) = 0
             If iContext = MSIINSTALLCONTEXT_C2RV2 Then Arr(i, COL_VIRTUALIZED) = 1
+            If iContext = MSIINSTALLCONTEXT_C2RV3 Then Arr(i, COL_VIRTUALIZED) = 1
         ' InstallType flag
             Arr(i, COL_INSTALLTYPE) = "MSI"
             If iContext = MSIINSTALLCONTEXT_C2RV2 Then Arr(i, COL_INSTALLTYPE) = "C2R"
+            If iContext = MSIINSTALLCONTEXT_C2RV3 Then Arr(i, COL_INSTALLTYPE) = "C2R"
 
             i = i + 1
         Next 'ProdX
@@ -5612,6 +6551,7 @@ Sub InitPLArrays
     ReDim arrAllProducts(-1)
     ReDim arrVirtProducts(-1)
     ReDim arrVirt2Products(-1)
+    ReDim arrVirt3Products(-1)
     ReDim arrMProducts(-1)
     ReDim arrMVProducts(-1)
     ReDim arrUUProducts(-1)
@@ -5661,6 +6601,7 @@ Function CheckPreReq ()
     
     'Check registry access permissions
     'Failure will not terminate the scipt but noted in the log
+    Set dicActiveC2Rv2Versions = CreateObject("Scripting.Dictionary")
     hDefKey = HKEY_LOCAL_MACHINE
     sSubKeyName = "SOFTWARE\Microsoft\Windows"
     For i = 1 To 4
@@ -5721,7 +6662,7 @@ End Sub
 Sub ComputerProperties
     Dim oOS, oWmi, oOsItem
     Dim sOSinfo, sOSVersion, sUserInfo, sSubKeyName, sName, sValue, sOsMui, sOsLcid, sCulture
-    Dim arrKeys, arrNames, arrTypes,arrVersion
+    Dim arrKeys, arrNames, arrTypes, arrVersion
     Dim qOS, OsLang, ValueType
     Dim iOSVersion, iValueName
     Dim hDefKey
@@ -5864,46 +6805,53 @@ Sub WriteXmlLog
     Dim sXmlLine, sText, sProductCode, sSPLevel, sFamily, sSeq
     Dim i, iVPCnt, iItem, iArpCnt, iDummy, iPos, iPosMaster, iChainProd, iPosPatch, iColPatch
     Dim iColISource, iLogCnt
-    Dim arrC2RPackages, arrC2RItems, arrTmp, arrTmpInner, arrLicData, arrKeyComponents, arrComponentData
-    Dim dicXmlTmp
+    Dim arrC2RPackages, arrC2RItems, arrTmp, arrTmpInner, arrLicData, arrKeyComponents
+    Dim arrComponentData, arrVAppState
+    Dim dicXmlTmp, dicApps
     Dim fLogProduct
 
     On Error Resume Next
     
     Set dicXmlTmp = CreateObject("Scripting.Dictionary")
+    Set dicApps = CreateObject("Scripting.Dictionary")
 
     Set XmlLogStream = oFso.CreateTextFile(sPathOutputFolder & sComputerName & "_ROIScan.xml", True, True)
     XmlLogStream.WriteLine "<?xml version=""1.0""?>"
     XmlLogStream.WriteLine "<OFFICEINVENTORY>"
 
-    'c2r v2
-    If UBound(arrVirt2Products) > -1 Then
-        For iVPCnt = 0 To UBound(arrVirt2Products, 1)
+    'c2r v3
+    If UBound(arrVirt3Products) > -1 Then
+        sXmlLine = "<C2RShared "
+        For Each key in dicC2RPropV3.Keys
+            sXmlLine = sXmlLine & " " & Replace(key, " ", "") & "=" & chr(34) & dicC2RPropV3.Item(key) & chr(34)
+        Next
+        ' end line
+        sXmlLine = sXmlLine & " />"
+        'flush
+        XmlLogStream.WriteLine sXmlLine
+
+        For iVPCnt = 0 To UBound(arrVirt3Products, 1)
             sXmlLine = ""
             sXmlLine = "<SKU "
             ' ProductName (heading)
-            sXmlLine = sXmlLine & "ProductName=" & chr(34) & arrVirt2Products(iVPCnt,COL_PRODUCTNAME) & chr(34)
+            sXmlLine = sXmlLine & "ProductName=" & chr(34) & arrVirt3Products (iVPCnt, COL_PRODUCTNAME) & chr(34)
             ' KeyName
-            sXmlLine = sXmlLine & " KeyName=" & chr(34) & arrVirt2Products(iVPCnt,VIRTPROD_KEYNAME) & chr(34)
+            sXmlLine = sXmlLine & " KeyName=" & chr(34) & arrVirt3Products (iVPCnt, VIRTPROD_KEYNAME) & chr(34)
             ' ConfigName
-            sXmlLine = sXmlLine & " ConfigName=" & chr(34) & arrVirt2Products(iVPCnt,VIRTPROD_CONFIGNAME) & chr(34)
+            sXmlLine = sXmlLine & " ConfigName=" & chr(34) & arrVirt3Products (iVPCnt, VIRTPROD_CONFIGNAME) & chr(34)
             sXmlLine = sXmlLine & " IsChainedChild=" & chr(34) & "FALSE" & chr(34)
             ' ProductCode
             sXmlLine = sXmlLine & " ProductCode=" & chr(34) & "" & chr(34)
             ' ProductVersion
-            sXmlLine = sXmlLine & " ProductVersion=" & chr(34) & arrVirt2Products(iVPCnt,VIRTPROD_PRODUCTVERSION) & chr(34)
+            sXmlLine = sXmlLine & " ProductVersion=" & chr(34) & dicC2RPropV3.Item(STR_VERSION) & chr(34)
             ' SP Level
-            sXmlLine = sXmlLine & " ServicePackLevel=" & chr(34) & arrVirt2Products(iVPCnt,VIRTPROD_SPLEVEL) & chr(34)
+            sXmlLine = sXmlLine & " ServicePackLevel=" & chr(34) & arrVirt3Products (iVPCnt, VIRTPROD_SPLEVEL) & chr(34)
             ' Architecture
-            sXmlLine = sXmlLine & " Architecture=" & chr(34) & arrVirt2Products(iVPCnt,VIRTPROD_BITNESS) & chr(34)
+            sXmlLine = sXmlLine & " Architecture=" & chr(34) & dicC2RPropV3.Item(STR_PLATFORM) & chr(34)
             ' InstallType
             sXmlLine = sXmlLine & " InstallType=" & chr(34) & "C2R" & chr(34)
             ' C2R integration ProductCode
-            Select Case Left(arrVirt2Products(iVPCnt,VIRTPROD_PRODUCTVERSION), 2)
-            Case "15"
-                sProductCode = sProductCode_C2R_15
-            End Select
-            sXmlLine = sXmlLine & " C2rIntegrationProductCode=" & chr(34) & sProductCode & chr(34)
+            sXmlLine = sXmlLine & " C2rIntegrationProductCode=" & chr(34) & dicC2RPropV3.Item(STR_PACKAGEGUID) & chr(34)
             ' end line
             sXmlLine = sXmlLine & " >"
             'flush
@@ -5911,46 +6859,128 @@ Sub WriteXmlLog
 
             ' Child Packages
             XmlLogStream.WriteLine "<ChildPackages>"
-            arrC2RPackages = Split(arrVirt2Products(iVPCnt,VIRTPROD_CHILDPACKAGES), ";")
-            For i = 0 To UBound(arrC2RPackages) - 1 'strip off last delimiter
-                arrC2RItems = Split(arrC2RPackages(i), " - ")
-                If UBound(arrC2RItems) = 1 Then
-                    If NOT i = 0 Then XmlLogStream.WriteLine "</SkuCulture>"
-                    XmlLogStream.WriteLine "<SkuCulture culture=" & chr(34) & arrC2RItems(0) & chr(34) & " ProductVersion=" & chr(34) & arrC2RItems(1) & chr(34) & " >"
-                Else
-                    XmlLogStream.WriteLine "<ChildPackage ProductCode=" & chr(34) & arrC2RItems(0) & chr(34) & " ProductVersion=" & chr(34) & arrC2RItems(1) & chr(34) & " ProductName=" & chr(34) & arrC2RItems(2) & chr(34) & " />"
-                End If
-            Next 'i
-            XmlLogStream.WriteLine "</SkuCulture>"
+            arrC2RPackages = Split (arrVirt3Products(iVPCnt, VIRTPROD_CHILDPACKAGES), ";")
+            If UBound(arrC2RPackages) > 0 Then
+                For i = 0 To UBound(arrC2RPackages) - 1 'strip off last delimiter
+                    arrC2RItems = Split(arrC2RPackages(i), " - ")
+                    If UBound(arrC2RItems) = 1 Then
+                        If NOT i = 0 Then XmlLogStream.WriteLine "</SkuCulture>"
+                        XmlLogStream.WriteLine "<SkuCulture culture=" & chr(34) & arrC2RItems(0) & chr(34) & " ProductVersion=" & chr(34) & arrC2RItems(1) & chr(34) & " >"
+                    Else
+                        XmlLogStream.WriteLine "<ChildPackage ProductCode=" & chr(34) & arrC2RItems(0) & chr(34) & " ProductVersion=" & chr(34) & arrC2RItems(1) & chr(34) & " ProductName=" & chr(34) & arrC2RItems(2) & chr(34) & " />"
+                    End If
+                Next 'i
+                XmlLogStream.WriteLine "</SkuCulture>"
+            End If 'UBound(arrC2RPackages) > 0
             XmlLogStream.WriteLine "</ChildPackages>"
             
             'KeyComponents
-            If Len(arrVirt2Products(iVPCnt, VIRTPROD_KEYCOMPONENTS)) > 0 Then
-                If Right(arrVirt2Products(iVPCnt, VIRTPROD_KEYCOMPONENTS), 1) = ";" Then arrVirt2Products(iVPCnt, VIRTPROD_KEYCOMPONENTS) = Left(arrVirt2Products(iVPCnt, VIRTPROD_KEYCOMPONENTS), Len(arrVirt2Products(iVPCnt, VIRTPROD_KEYCOMPONENTS)) - 1 )
-            End If
+            MapAppsToConfigProduct dicApps, arrVirt3Products(iVPCnt, VIRTPROD_CONFIGNAME), 16
             XmlLogStream.WriteLine "<KeyComponents>"
-            arrKeyComponents = Split(arrVirt2Products(iVPCnt, VIRTPROD_KEYCOMPONENTS), ";")
-            dicXmlTmp.RemoveAll
-            For Each component in arrKeyComponents
-                arrComponentData = Split(component, ",")
-                If CheckArray(arrComponentData) Then
-                    If NOT dicXmlTmp.Exists(arrComponentData(6)) Then
-                        dicXmlTmp.Add arrComponentData(6), ""
-                        sXmlLine = "<Application "
-                        sXmlLine = sXmlLine & " Name=" & chr(34) & arrComponentData(0) & chr(34)
-                        sXmlLine = sXmlLine & " ExeName=" & chr(34) & arrComponentData(1) & chr(34)
-                        sXmlLine = sXmlLine & " VersionMajor=" & chr(34) & arrComponentData(2) & chr(34)
-                        sXmlLine = sXmlLine & " Version=" & chr(34) & arrComponentData(3) & chr(34)
-                        sXmlLine = sXmlLine & " InstallState=" & chr(34) & arrComponentData(4) & chr(34)
-                        sXmlLine = sXmlLine & " InstallStateString=" & chr(34) & arrComponentData(5) & chr(34)
-                        sXmlLine = sXmlLine & " ComponentId=" & chr(34) & arrComponentData(6) & chr(34)
-                        sXmlLine = sXmlLine & " FeatureName=" & chr(34) & arrComponentData(7) & chr(34)
-                        sXmlLine = sXmlLine & " Path=" & chr(34) & arrComponentData(8) & chr(34)
-                        sXmlLine = sXmlLine & " />"
-                        XmlLogStream.WriteLine sXmlLine
+            For Each key in dicApps
+                Set arrVAppState = Nothing
+                'sText = "Installed - "
+                arrVAppState = Split(dicKeyComponentsV3.Item(key), ",")
+                sXmlLine = "<Application "
+                sXmlLine = sXmlLine & " Name=" & chr(34) & key & chr(34)
+                sXmlLine = sXmlLine & " ExeName=" & chr(34) & arrVAppState (1) & chr(34)
+                sXmlLine = sXmlLine & " VersionMajor=" & chr(34) & arrVAppState (2) & chr(34)
+                sXmlLine = sXmlLine & " Version=" & chr(34) & arrVAppState (3) & chr(34)
+                sXmlLine = sXmlLine & " InstallState=" & chr(34) & arrVAppState (4) & chr(34)
+                sXmlLine = sXmlLine & " InstallStateString=" & chr(34) & arrVAppState (5) & chr(34)
+                sXmlLine = sXmlLine & " ComponentId=" & chr(34) & arrVAppState (6) & chr(34)
+                sXmlLine = sXmlLine & " FeatureName=" & chr(34) & arrVAppState (7) & chr(34)
+                sXmlLine = sXmlLine & " Path=" & chr(34) & arrVAppState (8) & chr(34)
+                sXmlLine = sXmlLine & " />"
+                XmlLogStream.WriteLine sXmlLine
+            Next 'key
+            XmlLogStream.WriteLine "</KeyComponents>"
+
+            'LicenseData
+            XmlLogStream.WriteLine "<LicenseData>"
+            XmlLogStream.WriteLine arrVirt3Products(iVPCnt, VIRTPROD_OSPPLICENSEXML)
+            XmlLogStream.WriteLine "</LicenseData>"
+            
+            XmlLogStream.WriteLine "</SKU>"
+        Next 'iVPCnt
+    End If 'c2r v2
+
+
+    'c2r v2
+    If UBound(arrVirt2Products) > -1 Then
+        sXmlLine = "<C2RShared "
+        For Each key in dicC2RPropV2.Keys
+            sXmlLine = sXmlLine & " " & Replace(key, " ", "") & "=" & chr(34) & dicC2RPropV2.Item(key) & chr(34)
+        Next
+        ' end line
+        sXmlLine = sXmlLine & " />"
+        'flush
+        XmlLogStream.WriteLine sXmlLine
+
+        For iVPCnt = 0 To UBound(arrVirt2Products, 1)
+            sXmlLine = ""
+            sXmlLine = "<SKU "
+            ' ProductName (heading)
+            sXmlLine = sXmlLine & "ProductName=" & chr(34) & arrVirt2Products (iVPCnt, COL_PRODUCTNAME) & chr(34)
+            ' KeyName
+            sXmlLine = sXmlLine & " KeyName=" & chr(34) & arrVirt2Products (iVPCnt, VIRTPROD_KEYNAME) & chr(34)
+            ' ConfigName
+            sXmlLine = sXmlLine & " ConfigName=" & chr(34) & arrVirt2Products (iVPCnt, VIRTPROD_CONFIGNAME) & chr(34)
+            sXmlLine = sXmlLine & " IsChainedChild=" & chr(34) & "FALSE" & chr(34)
+            ' ProductCode
+            sXmlLine = sXmlLine & " ProductCode=" & chr(34) & "" & chr(34)
+            ' ProductVersion
+            sXmlLine = sXmlLine & " ProductVersion=" & chr(34) & arrVirt2Products (iVPCnt, VIRTPROD_PRODUCTVERSION) & chr(34)
+            ' SP Level
+            sXmlLine = sXmlLine & " ServicePackLevel=" & chr(34) & arrVirt2Products (iVPCnt, VIRTPROD_SPLEVEL) & chr(34)
+            ' Architecture
+            sXmlLine = sXmlLine & " Architecture=" & chr(34) & dicC2RPropV2.Item(STR_PLATFORM) & chr(34)
+            ' InstallType
+            sXmlLine = sXmlLine & " InstallType=" & chr(34) & "C2R" & chr(34)
+            ' C2R integration ProductCode
+            sXmlLine = sXmlLine & " C2rIntegrationProductCode=" & chr(34) & dicC2RPropV2.Item(STR_PACKAGEGUID) & chr(34)
+            ' end line
+            sXmlLine = sXmlLine & " >"
+            'flush
+            XmlLogStream.WriteLine sXmlLine
+
+            ' Child Packages
+            XmlLogStream.WriteLine "<ChildPackages>"
+            arrC2RPackages = Split (arrVirt2Products(iVPCnt, VIRTPROD_CHILDPACKAGES), ";")
+            If UBound(arrC2RPackages) > 0 Then
+                For i = 0 To UBound(arrC2RPackages) - 1 'strip off last delimiter
+                    arrC2RItems = Split(arrC2RPackages(i), " - ")
+                    If UBound(arrC2RItems) = 1 Then
+                        If NOT i = 0 Then XmlLogStream.WriteLine "</SkuCulture>"
+                        XmlLogStream.WriteLine "<SkuCulture culture=" & chr(34) & arrC2RItems(0) & chr(34) & " ProductVersion=" & chr(34) & arrC2RItems(1) & chr(34) & " >"
+                    Else
+                        XmlLogStream.WriteLine "<ChildPackage ProductCode=" & chr(34) & arrC2RItems(0) & chr(34) & " ProductVersion=" & chr(34) & arrC2RItems(1) & chr(34) & " ProductName=" & chr(34) & arrC2RItems(2) & chr(34) & " />"
                     End If
-                End If
-            Next 'component
+                Next 'i
+                XmlLogStream.WriteLine "</SkuCulture>"
+            End If 'UBound(arrC2RPackages) > 0
+            XmlLogStream.WriteLine "</ChildPackages>"
+            
+            'KeyComponents
+            MapAppsToConfigProduct dicApps, arrVirt2Products(iVPCnt, VIRTPROD_CONFIGNAME), 15
+            XmlLogStream.WriteLine "<KeyComponents>"
+            For Each key in dicApps
+                Set arrVAppState = Nothing
+                'sText = "Installed - "
+                arrVAppState = Split(dicKeyComponentsV2.Item(key), ",")
+                sXmlLine = "<Application "
+                sXmlLine = sXmlLine & " Name=" & chr(34) & key & chr(34)
+                sXmlLine = sXmlLine & " ExeName=" & chr(34) & arrVAppState (1) & chr(34)
+                sXmlLine = sXmlLine & " VersionMajor=" & chr(34) & arrVAppState (2) & chr(34)
+                sXmlLine = sXmlLine & " Version=" & chr(34) & arrVAppState (3) & chr(34)
+                sXmlLine = sXmlLine & " InstallState=" & chr(34) & arrVAppState (4) & chr(34)
+                sXmlLine = sXmlLine & " InstallStateString=" & chr(34) & arrVAppState (5) & chr(34)
+                sXmlLine = sXmlLine & " ComponentId=" & chr(34) & arrVAppState (6) & chr(34)
+                sXmlLine = sXmlLine & " FeatureName=" & chr(34) & arrVAppState (7) & chr(34)
+                sXmlLine = sXmlLine & " Path=" & chr(34) & arrVAppState (8) & chr(34)
+                sXmlLine = sXmlLine & " />"
+                XmlLogStream.WriteLine sXmlLine
+            Next 'key
             XmlLogStream.WriteLine "</KeyComponents>"
             
             'LicenseData
@@ -5983,11 +7013,15 @@ Sub WriteXmlLog
         Next 'iVPCnt
     End If 'c2r v1
 
-    'MSI Office 12, 14, 15 Products
+    'MSI Office > v12 Products
     For iArpCnt = 0 To UBound(arrArpProducts)
+'        If arrArpProducts(iArpCnt, COL_CONFIGINSTALLTYPE) = "VIRTUAL" Then
+'            'do nothing
+'        Else
         ' extra loop to allow exit out of a bad product
         iPos = GetArrayPosition(arrMaster, arrArpProducts(iArpCnt, ARP_CONFIGPRODUCTCODE))
-        sProductCode = "" : sProductCode = arrMaster(iPos, COL_PRODUCTCODE)
+        sProductCode = "" 
+        If NOT iPos = -1 Then sProductCode = arrMaster(iPos, COL_PRODUCTCODE)
         sXmlLine = ""
         sXmlLine = "<SKU "
         ' ProductName (heading)
@@ -6174,11 +7208,12 @@ Sub WriteXmlLog
         XmlLogStream.WriteLine "</InstallSource>"
 
         XmlLogStream.WriteLine "</SKU>"
+'        End If
     Next 'iArpCnt
 
     'Other Products
     Err.Clear
-    For iLogCnt = 0 To 10
+    For iLogCnt = 0 To 12
         For iPosMaster = 0 To UBound(arrMaster)
             fLogProduct = CheckLogProduct(iLogCnt, iPosMaster)
             If fLogProduct Then
@@ -6323,13 +7358,16 @@ End Sub 'WriteXmlLog
 '=======================================================================================================
 
 Sub PrepareLog (sLogFormat)
-    Dim Key,MspSeq,Lic, ScenarioItem
-    Dim i,j,k,m,iLBound,iUBound,iAip,iPos,iPosMaster,iPosArp,iArpCnt,iChainProd,iPosOrder,iDummy
-    Dim iPosPatch,iColPatch,iColISource,iPosISource,iLogCnt,iVPCnt
-    Dim sTmp,sText,sTextErr,sTextNotes,sCategory,sSeq,sFamily
-    Dim bCspCondition,fLogProduct,fDataIntegrity
+    Dim Key, MspSeq, Lic, ScenarioItem
+    Dim i, j, k, m, iLBound, iUBound
+    Dim iAip, iPos, iPosMaster, iPosArp, iArpCnt, iChainProd, iPosOrder, iDummy
+    Dim iPosPatch, iColPatch, iColISource, iPosISource, iLogCnt, iVPCnt
+    Dim sTmp, sText, sTextErr, sTextNotes, sCategory, sSeq, sFamily, sFamilyMain, sFamilyLang
+    Dim sProdCache, sLcid, sVer
+    Dim bCspCondition, fLogProduct, fDataIntegrity
     Dim fLoggedVirt, fLoggedMulti, fLoggedSingle
-    Dim arrOrder(),arrTmp,arrTmpInner,dicTmp,arrLicData, arrC2RPackages
+    Dim arrOrder(), arrTmp, arrTmpInner, arrLicData, arrC2RPackages, arrVAppState
+    Dim dicFamilyLang, dicApps, dicTmp, dicMspFamVer
     On Error Resume Next
 
     fDataIntegrity = True
@@ -6372,68 +7410,214 @@ Sub PrepareLog (sLogFormat)
     Next 'iPosMaster
     
     Set dicTmp = CreateObject("Scripting.Dictionary")
+    Set dicFamilyLang = CreateObject("Scripting.Dictionary")
+    Set dicMspFamVer = CreateObject("Scripting.Dictionary")
+    Set dicApps = CreateObject("Scripting.Dictionary")
     
 ' prepare Virtualized C2R Products
 ' --------------------------------
-    If UBound(arrVirtProducts) > -1 OR UBound(arrVirt2Products) > -1 Then
-        CacheLog LOGPOS_PRODUCT,LOGHEADING_H1,Null,"C2R Products" 
+    If UBound(arrVirtProducts) > -1 OR UBound(arrVirt2Products) > -1 OR UBound(arrVirt3Products) > -1 Then
+        CacheLog LOGPOS_PRODUCT, LOGHEADING_H1, Null, "C2R Products" 
         fLoggedVirt = True
+        
+        'O16 C2R
+        If UBound(arrVirt3Products) > -1 Then
+            CacheLog LOGPOS_PRODUCT, LOGHEADING_H2, Null, "C2R Shared Properties" 
+                
+            'Shared Properties
+            For Each key in dicC2RPropV3.Keys
+                Select Case key
+                Case STR_REGPACKAGEGUID
+                Case STR_CDNBASEURL
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "Install", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV3.Item(key)
+                Case STR_UPDATESENABLED
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "Updates", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV3.Item(key)
+                Case STR_UPDATETOVERSION
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV3.Item(key)
+                Case Else
+                    sTmp = dicC2RPropV3.Item(key)
+                    If NOT sTmp = "" Then CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV3.Item(key)
+                End Select
+            Next
 
-        If UBound(arrVirt2Products) > -1 Then
-                ' Scenario key state
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_H2,Null, "Scenario Key State (applicable for all 2013 C2R products)" 
-                For Each ScenarioItem in dicScenario.Keys
-                    CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, ScenarioItem, dicScenario.Item(ScenarioItem)
-                Next 'ScenarioItem
-            
-            For iVPCnt = 0 To UBound(arrVirt2Products, 1)
-                ' ProductName (heading)
-                sText = "" : sText = arrVirt2Products(iVPCnt,COL_PRODUCTNAME)
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_H2,Null,sText 
-                ' ProductVersion
-                sText = "" : sText = arrVirt2Products(iVPCnt,VIRTPROD_PRODUCTVERSION)
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,arrLogFormat(ARRAY_VIRTPROD,VIRTPROD_PRODUCTVERSION),sText
-                ' SP Level
-                sText = "" : sText = arrVirt2Products(iVPCnt,VIRTPROD_SPLEVEL)
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,arrLogFormat(ARRAY_VIRTPROD,VIRTPROD_SPLEVEL),sText
-                ' Architecture
-                sText = "" : sText = arrVirt2Products(iVPCnt,VIRTPROD_BITNESS)
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,arrLogFormat(ARRAY_VIRTPROD,VIRTPROD_BITNESS),sText
-                ' InstallType
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, "InstallType", "C2R"
-                ' ConfigName
-                sText = "" : sText = arrVirt2Products(iVPCnt,VIRTPROD_CONFIGNAME)
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,arrLogFormat(ARRAY_VIRTPROD,VIRTPROD_CONFIGNAME),sText
-                ' Child Packages
-                arrC2RPackages = Split(arrVirt2Products(iVPCnt,VIRTPROD_CHILDPACKAGES), ";")
-                For i = 0 To UBound(arrC2RPackages)
-                    If i = 0 Then CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, "Chained Packages", arrC2RPackages(i) _
-                    Else CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, "", arrC2RPackages(i)
-                Next 'i
 
-                'LicenseData
-                '-----------
-                If arrVirt2Products(iVPCnt,VIRTPROD_OSPPLICENSE) <> "" Then
-                    arrLicData = Split(arrVirt2Products(iVPCnt,VIRTPROD_OSPPLICENSE), "#;#")
-                    If CheckArray(arrLicData) Then
-                        If NOT fBasicMode Then CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,"",""
-                        i = 0
-                        For Each Lic in arrLicData
-                            arrTmp = Split(Lic, ";")
-                            If LCase(arrTmp(0)) = "active license" Then i = 1
-                            If i < 2 Then
-                                CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrTmp(0), arrTmp(1)
-                            Else
-                                If NOT (fBasicMode AND i > 5) Then
-                                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", arrTmp(0) & ":" & Space(25 - Len(arrTmp(0))) & arrTmp(1)
+            ' Scenario key state
+            CacheLog LOGPOS_PRODUCT, LOGHEADING_H2, Null, "Scenario Key State" 
+            For Each ScenarioItem in dicScenarioV3.Keys
+                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, ScenarioItem, dicScenarioV3.Item(ScenarioItem)
+            Next 'ScenarioItem
+
+            sProdCache = ""
+            For iVPCnt = 0 To UBound(arrVirt3Products, 1)
+                If NOT InStr(sProdCache, arrVirt3Products(iVPCnt, VIRTPROD_CONFIGNAME)) > 0 Then
+                    sProdCache = sProdCache & arrVirt3Products(iVPCnt, VIRTPROD_CONFIGNAME) & ","
+
+                    ' ProductName (heading)
+                    sText = "" : sText = arrVirt3Products(iVPCnt, COL_PRODUCTNAME)
+                    If InStr(sText, " - ") > 0 AND (Len(sText) = InStr(sText, " - ") + 7) Then sText = Left(sText, InStr(sText, " - ") - 1)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_H2, Null, sText 
+                    ' ProductVersion
+                    sText = "" : sText = arrVirt3Products(iVPCnt, VIRTPROD_PRODUCTVERSION)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_PRODUCTVERSION), sText
+                    ' SP Level
+                    sText = "" : sText = arrVirt3Products(iVPCnt, VIRTPROD_SPLEVEL)
+                    ' ConfigName
+                    sText = "" : sText = arrVirt3Products(iVPCnt, VIRTPROD_CONFIGNAME)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_CONFIGNAME), sText
+                    ' Languages
+                    i = 0
+                    For Each key in dicVirt3Cultures.Keys
+                        If i = 0 Then sText = "Language(s)" Else sText = ""
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sText, key
+                        i = i + 1
+                    Next 'key
+                    
+                    'Application States
+                    '------------------
+                    MapAppsToConfigProduct dicApps, arrVirt3Products(iVPCnt, VIRTPROD_CONFIGNAME), 16
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    For Each key in dicApps
+                        Set arrVAppState = Nothing
+                        sText = "Installed - "
+                        arrVAppState = Split(dicKeyComponentsV3.Item(key), ",")
+                        If NOT arrVAppState(4) = "3" Then
+                            sText = "Absent/Excluded - "
+                        Else
+                            sText = sText & arrVAppState(3) & " - " & arrVAppState(6) & " - " & arrVAppState(7) & " - " & arrVAppState(8)
+                        End If
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, sText
+                    Next 'key
+                    
+                    'LicenseData
+                    '-----------
+                    If arrVirt3Products(iVPCnt, VIRTPROD_OSPPLICENSE) <> "" Then
+                        arrLicData = Split(arrVirt3Products(iVPCnt, VIRTPROD_OSPPLICENSE), "#;#")
+                        If CheckArray(arrLicData) Then
+                            If NOT fBasicMode Then CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, "", ""
+                            i = 0
+                            For Each Lic in arrLicData
+                                arrTmp = Split(Lic, ";")
+                                If LCase(arrTmp(0)) = "active license" Then i = 1
+                                If i < 2 Then
+                                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrTmp(0), arrTmp(1)
+                                Else
+                                    If NOT (fBasicMode AND i > 5) Then
+                                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", arrTmp(0) & ":" & Space(25 - Len(arrTmp(0))) & arrTmp(1)
+                                    End If
                                 End If
-                            End If
-                            i = i + 1
-                        Next 'Lic
-                    End If 'arrLicData
-                End If 'arrMaster
-
+                                i = i + 1
+                            Next 'Lic
+                        End If 'arrLicData
+                    End If 'arrMaster
+                End If 'sProdCache
             Next 'iVPCnt
+        'end C2R v3
+
+        'O15 C2R
+        ElseIf UBound(arrVirt2Products) > -1 Then
+            CacheLog LOGPOS_PRODUCT, LOGHEADING_H2, Null, "C2R Shared Properties" 
+
+            'Shared Properties
+            For Each key in dicC2RPropV2.Keys
+                Select Case key
+                Case STR_REGPACKAGEGUID
+                Case STR_CDNBASEURL
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "Install", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV2.Item(key)
+                Case STR_UPDATESENABLED
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "Updates", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV2.Item(key)
+                Case STR_UPDATETOVERSION
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", ""
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV2.Item(key)
+                Case Else
+                    sTmp = dicC2RPropV2.Item(key)
+                    If NOT sTmp = "" Then CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, dicC2RPropV2.Item(key)
+                End Select
+            Next
+
+
+            ' Scenario key state
+            CacheLog LOGPOS_PRODUCT, LOGHEADING_H2, Null, "Scenario Key State" 
+            For Each ScenarioItem in dicScenarioV2.Keys
+                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, ScenarioItem, dicScenarioV2.Item(ScenarioItem)
+            Next 'ScenarioItem
+
+            sProdCache = ""
+            For iVPCnt = 0 To UBound(arrVirt2Products, 1)
+                If NOT InStr(sProdCache, arrVirt2Products(iVPCnt, VIRTPROD_CONFIGNAME)) > 0 Then
+                    sProdCache = sProdCache & arrVirt2Products(iVPCnt, VIRTPROD_CONFIGNAME) & ","
+
+                    ' ProductName (heading)
+                    sText = "" : sText = arrVirt2Products(iVPCnt, COL_PRODUCTNAME)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_H2, Null, sText 
+                    ' ProductVersion
+                    sText = "" : sText = arrVirt2Products(iVPCnt, VIRTPROD_PRODUCTVERSION)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_PRODUCTVERSION), sText
+                    ' SP Level
+                    sText = "" : sText = arrVirt2Products(iVPCnt, VIRTPROD_SPLEVEL)
+                    ' ConfigName
+                    sText = "" : sText = arrVirt2Products(iVPCnt, VIRTPROD_CONFIGNAME)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrLogFormat(ARRAY_VIRTPROD, VIRTPROD_CONFIGNAME), sText
+                    ' Languages
+                    i = 0
+                    For Each key in dicVirt2Cultures.Keys
+                        If i = 0 Then sText = "Language(s)" Else sText = ""
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sText, key
+                        i = i + 1
+                    Next 'key
+                    ' Child Packages
+                    arrC2RPackages = Split(arrVirt2Products(iVPCnt, VIRTPROD_CHILDPACKAGES), ";")
+                    For i = 0 To UBound(arrC2RPackages)
+                        If i = 0 Then CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "Chained Packages", arrC2RPackages(i) _
+                        Else CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", arrC2RPackages(i)
+                    Next 'i
+                    'Application States
+                    '------------------
+                    MapAppsToConfigProduct dicApps, arrVirt2Products(iVPCnt, VIRTPROD_CONFIGNAME), 15
+                    For Each key in dicApps
+                        Set arrVAppState = Nothing
+                        sText = "Installed - "
+                        arrVAppState = Split(dicKeyComponentsV2.Item(key), ",")
+                        If NOT arrVAppState(4) = "3" Then
+                            sText = "Absent/Excluded - "
+                        Else
+                            sText = sText & arrVAppState(3) & " - " & arrVAppState(6) & " - " & arrVAppState(7) & " - " & arrVAppState(8)
+                        End If
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, key, sText
+                    Next 'key
+
+                    'LicenseData
+                    '-----------
+                    If arrVirt2Products(iVPCnt, VIRTPROD_OSPPLICENSE) <> "" Then
+                        arrLicData = Split(arrVirt2Products(iVPCnt,VIRTPROD_OSPPLICENSE), "#;#")
+                        If CheckArray(arrLicData) Then
+                            If NOT fBasicMode Then CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,"",""
+                            i = 0
+                            For Each Lic in arrLicData
+                                arrTmp = Split(Lic, ";")
+                                If LCase(arrTmp(0)) = "active license" Then i = 1
+                                If i < 2 Then
+                                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrTmp(0), arrTmp(1)
+                                Else
+                                    If NOT (fBasicMode AND i > 5) Then
+                                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", arrTmp(0) & ":" & Space(25 - Len(arrTmp(0))) & arrTmp(1)
+                                    End If
+                                End If
+                                i = i + 1
+                            Next 'Lic
+                        End If 'arrLicData
+                    End If 'arrMaster
+                End If 'sProdCache
+            Next 'iVPCnt
+
         ElseIf UBound(arrVirtProducts) > -1 Then
             For iVPCnt = 0 To UBound(arrVirtProducts, 1)
                 sText = "" : sText = arrVirtProducts(iVPCnt,COL_PRODUCTNAME)
@@ -6451,10 +7635,10 @@ Sub PrepareLog (sLogFormat)
         'No virtualized products found
     End If
     
-    'Prepare Office 12, 14 & 15 Products
-    '-------------------------------
+    'Prepare Office > 12 Products
+    '----------------------------
     If CheckArray(arrArpProducts) Then
-        CacheLog LOGPOS_PRODUCT,LOGHEADING_H1,Null,"Chained Products View" 
+        CacheLog LOGPOS_PRODUCT, LOGHEADING_H1, Null, "Chained Products View" 
         fLoggedMulti = True
 
     For iArpCnt = 0 To UBound(arrArpProducts)
@@ -6559,40 +7743,64 @@ Sub PrepareLog (sLogFormat)
             If NOT fBasicMode Then
                 'Patches
                 '-------
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,"",""
+                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, "", ""
                 sCategory = "Patch Baseline"
-                sText = "" : If NOT iPos = -1 Then sText = arrMaster(iPos,COL_PRODUCTVERSION)
-                CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,sCategory,sText
+                sText = "" : If NOT iPos = -1 Then sText = arrMaster(iPos, COL_PRODUCTVERSION)
+                CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sCategory, sText
             
                 sCategory = "Post Baseline Sequences"
                 dicTmp.RemoveAll
-                For iChainProd = COL_LBOUNDCHAINLIST To UBound(arrArpProducts,2)
-                    If IsEmpty(arrArpProducts(iArpCnt,iChainProd)) Then Exit For
-                    iPosMaster = GetArrayPosition(arrMaster,arrArpProducts(iArpCnt,iChainProd))
-                    If iPosMaster = -1  AND NOT dicMissingChild.Exists(arrArpProducts(iArpCnt,iChainProd)) Then Cachelog LOGPOS_REVITEM,LOGHEADING_NONE,ERR_CATEGORYERROR,ERR_DATAINTEGRITY
-                    'Only run if iPosMaster has a valid index #
+                dicMspFamVer.RemoveAll
+                For iChainProd = COL_LBOUNDCHAINLIST To UBound (arrArpProducts, 2)
+                    If IsEmpty (arrArpProducts(iArpCnt, iChainProd)) Then Exit For
+                    iPosMaster = GetArrayPosition (arrMaster, arrArpProducts(iArpCnt, iChainProd))
+                    If iPosMaster = -1  AND NOT dicMissingChild.Exists (arrArpProducts(iArpCnt, iChainProd)) Then Cachelog LOGPOS_REVITEM, LOGHEADING_NONE, ERR_CATEGORYERROR, ERR_DATAINTEGRITY
+                    
                     If Not iPosMaster = -1 Then
                         Set arrTmp = Nothing
-                        arrTmp = Split(arrMaster(iPosMaster,COL_PATCHFAMILY),",")
+                        arrTmp = Split (arrMaster(iPosMaster, COL_PATCHFAMILY), ",")
                         For Each MspSeq in arrTmp
-                            arrTmpInner = Split(MspSeq,":")
-                            sFamily = "" : sSeq = ""
+                            arrTmpInner = Split (MspSeq, ":")
+                            sFamily = "" : sSeq = "" : sFamilyMain = "" : sFamilyLang = ""
                             sFamily = arrTmpInner(0)
                             sSeq  = arrTmpInner(1)
-                            If (sSeq>arrMaster(iPosMaster,COL_PRODUCTVERSION)) Then 
+                            If (sSeq > arrMaster(iPosMaster, COL_PRODUCTVERSION)) Then 
                                 If dicTmp.Exists(sFamily) Then
-                                    If (sSeq > dicTmp.Item(sFamily)) Then dicTmp.Item(sFamily)=sSeq
+                                    If (sSeq > dicTmp.Item(sFamily)) Then dicTmp.Item(sFamily) = sSeq
                                 Else
-                                    dicTmp.Add sFamily,sSeq
+                                    dicTmp.Add sFamily, sSeq
                                 End If
                             End If
                         Next 'MspSeq
                     End If 'Not iPosMaster = -1
                 Next 'iChainProd
-                For Each Key in dicTmp.Keys
-                    CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,sCategory,dicTmp.Item(Key)&" - "&Key
-                    sCategory = ""
+                
+                For Each key in dicTmp.Keys
+                    sTmp = ""
+                    If InStr (key, "_") > 0 Then
+                       If Len (key) = InStr (key, "_") + 4 Then
+                            sTmp = Left (key, InStr (key, "_")) & dicTmp.Item (key)
+                            sLcid = Right (key, 4)
+                            If NOT dicMspFamVer.Exists (sTmp) Then
+                                dicMspFamVer.Add sTmp, sLcid
+                            Else
+                                If NOT InStr (dicMspFamVer.Item (sTmp), sLcid) > 0 Then dicMspFamVer.Item (sTmp) = dicMspFamVer.Item (sTmp) & "," & sLcid
+                            End If
+                        End If
+                    Else
+                        If NOT dicMspFamVer.Exists (key) Then dicMspFamVer.Add key, dicTmp.Item (key)
+                    End If
                 Next
+
+                For Each key in dicMspFamVer.Keys
+                    If InStr (key, "_") > 0 Then
+                        arrTmp = Split (key, "_")
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sCategory, arrTmp (1) & " - " & arrTmp (0) & " (" & dicMspFamVer.Item (key) & ")"
+                    Else
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sCategory, dicTmp.Item(Key) & " - " & key
+                    End If
+                    sCategory = ""
+                Next 'key
             
                 sCategory = "Patchlist by product"
                 For iChainProd = COL_LBOUNDCHAINLIST To UBound(arrArpProducts,2)
@@ -6613,7 +7821,6 @@ Sub PrepareLog (sLogFormat)
                                 CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,sCategory,RTrimComma(sText)
                             End If 'IsEmpty
                         Next 'iPosPatch
-                    
                     End If ' Not iPosMaster = -1
                 Next 'iChainProd
             
@@ -6636,7 +7843,7 @@ Sub PrepareLog (sLogFormat)
     'Prepare Other Products
     '======================
     Err.Clear
-    For iLogCnt = 0 To 10
+    For iLogCnt = 0 To 12
         For iPosMaster = 0 To UBound(arrMaster)
             fLogProduct = CheckLogProduct(iLogCnt, iPosMaster)
             If fLogProduct Then
@@ -6671,23 +7878,23 @@ Sub PrepareLog (sLogFormat)
                 If NOT fBasicMode Then
                     'Patches
                     '-------
-                    CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,"",""
+                    CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE, "", ""
                     'First loop will take care of client side patches
                     'Second loop will log patches in the InstallSource
 
                     sCategory = "Patch Baseline"
-                    CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,sCategory,arrMaster(iPosMaster,COL_PRODUCTVERSION)
+                    CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sCategory, arrMaster(iPosMaster, COL_PRODUCTVERSION)
                 
                     sCategory = "Post Baseline Sequences"
                     dicTmp.RemoveAll
                     Set arrTmp = Nothing
-                    arrTmp = Split(arrMaster(iPosMaster,COL_PATCHFAMILY),",")
+                    arrTmp = Split(arrMaster(iPosMaster, COL_PATCHFAMILY), ",")
                     For Each MspSeq in arrTmp
-                        arrTmpInner = Split(MspSeq,":")
-                        dicTmp.Add arrTmpInner(0),arrTmpInner(1)
+                        arrTmpInner = Split(MspSeq, ":")
+                        dicTmp.Add arrTmpInner(0), arrTmpInner(1)
                     Next 'MspSeq
                     For Each Key in dicTmp.Keys
-                        CacheLog LOGPOS_PRODUCT,LOGHEADING_NONE,sCategory,dicTmp.Item(Key)&" - "&Key
+                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, sCategory, dicTmp.Item(Key) & " - " & Key
                         sCategory = ""
                     Next
                 
@@ -6754,39 +7961,49 @@ Function CheckLogProduct (iLogCnt, iPosMaster)
             
     Case 0 'Add-Ins
         fLogProduct = False
-        fLogProduct = fLogProduct OR (InStr(POWERPIVOT_2010,arrMaster(iPosMaster,COL_UPGRADECODE)) > 0 AND Len(arrMaster(iPosMaster,COL_UPGRADECODE)) = 38)
-    Case 1 'Office 15
-        fLogProduct = fLogChainedDetails AND arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=15
-    Case 2 'Office 15 Single Msi Products
+        fLogProduct = fLogProduct OR (InStr(POWERPIVOT_2010, arrMaster(iPosMaster, COL_UPGRADECODE)) > 0 AND Len(arrMaster(iPosMaster, COL_UPGRADECODE)) = 38)
+    Case 1 'Office 16
+        fLogProduct = fLogChainedDetails AND arrMaster(iPosMaster, COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster, COL_PRODUCTCODE)) = 16
+    Case 2 'Office 16 Single Msi Products
         fLogProduct = NOT fLogChainedDetails AND _ 
-                        arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND _ 
-                        ( (NOT arrMaster(iPosMaster,COL_SYSTEMCOMPONENT)=1) OR (NOT arrMaster(iPosMaster,COL_SYSTEMCOMPONENT)=0 AND arrMaster(iPosMaster,COL_ARPPARENTCOUNT)=0) ) AND _ 
-                        IsEmpty(arrMaster(iPosMaster,COL_ARPPARENTCOUNT)) AND _ 
-                        GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=15
-    Case 3 'Office 14
+                        arrMaster(iPosMaster, COL_ISOFFICEPRODUCT) AND _ 
+                        ( (NOT arrMaster(iPosMaster, COL_SYSTEMCOMPONENT) = 1) OR (NOT arrMaster(iPosMaster, COL_SYSTEMCOMPONENT) = 0 AND arrMaster(iPosMaster, COL_ARPPARENTCOUNT) = 0) ) AND _ 
+                        IsEmpty(arrMaster(iPosMaster, COL_ARPPARENTCOUNT)) AND _ 
+                        GetVersionMajor(arrMaster(iPosMaster, COL_PRODUCTCODE)) = 16
+        If arrMaster(iPosMaster, COL_INSTALLTYPE) = "C2R" AND NOT fLogVerbose Then fLogProduct = False
+    Case 3 'Office 15 
+        fLogProduct = fLogChainedDetails AND arrMaster(iPosMaster, COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster, COL_PRODUCTCODE)) = 15
+    Case 4 'Office 15 Single Msi Products
+        fLogProduct = NOT fLogChainedDetails AND _ 
+                        arrMaster(iPosMaster, COL_ISOFFICEPRODUCT) AND _ 
+                        ( (NOT arrMaster(iPosMaster, COL_SYSTEMCOMPONENT) = 1) OR (NOT arrMaster(iPosMaster, COL_SYSTEMCOMPONENT) = 0 AND arrMaster(iPosMaster, COL_ARPPARENTCOUNT) = 0) ) AND _ 
+                        IsEmpty(arrMaster(iPosMaster, COL_ARPPARENTCOUNT)) AND _ 
+                        GetVersionMajor(arrMaster(iPosMaster, COL_PRODUCTCODE)) = 15
+        If arrMaster(iPosMaster, COL_INSTALLTYPE) = "C2R" AND NOT fLogVerbose Then fLogProduct = False
+    Case 5 'Office 14
         fLogProduct = fLogChainedDetails AND arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=14
-    Case 4 'Office 14 Single Msi Products
+    Case 6 'Office 14 Single Msi Products
         fLogProduct = NOT fLogChainedDetails AND _ 
                         arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND _ 
                         ( (NOT arrMaster(iPosMaster,COL_SYSTEMCOMPONENT)=1) OR (NOT arrMaster(iPosMaster,COL_SYSTEMCOMPONENT)=0 AND arrMaster(iPosMaster,COL_ARPPARENTCOUNT)=0) ) AND _ 
                         IsEmpty(arrMaster(iPosMaster,COL_ARPPARENTCOUNT)) AND _ 
                         GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=14
-    Case 5 'Office 12
+    Case 7 'Office 12
         fLogProduct = fLogChainedDetails AND arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=12
-    Case 6 'Office 12 Single Msi Products
+    Case 8 'Office 12 Single Msi Products
         fLogProduct = NOT fLogChainedDetails AND _ 
                         arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND _ 
                         ( (NOT arrMaster(iPosMaster,COL_SYSTEMCOMPONENT)=1) OR (NOT arrMaster(iPosMaster,COL_SYSTEMCOMPONENT)=0 AND arrMaster(iPosMaster,COL_ARPPARENTCOUNT)=0) ) AND _ 
                         IsEmpty(arrMaster(iPosMaster,COL_ARPPARENTCOUNT)) AND _ 
                         GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=12
-    Case 7 'Office 11
+    Case 9 'Office 11
         fLogProduct = arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=11
-    Case 8 'Office 10
+    Case 10 'Office 10
         fLogProduct = arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=10
-    Case 9 'Office  9
+    Case 11 'Office  9
         fLogProduct = arrMaster(iPosMaster,COL_ISOFFICEPRODUCT) AND GetVersionMajor(arrMaster(iPosMaster,COL_PRODUCTCODE))=9
-    Case 10 'Non Office Products
-        fLogProduct = fListNonOfficeProducts AND NOT arrMaster(iPosMaster,COL_ISOFFICEPRODUCT)
+    Case 12 'Non Office Products
+        fLogProduct = fListNonOfficeProducts AND NOT arrMaster(iPosMaster, COL_ISOFFICEPRODUCT)
     Case Else
     End Select
 
@@ -7009,7 +8226,6 @@ End Function
 
 '=======================================================================================================
 
-'hexArraytoString
 Function hAtS(arrHex)
     Dim c,s
 
@@ -7350,7 +8566,7 @@ Sub InitKeyComponents
     Dim arrKeyComponents
 
     On Error Resume Next
-    arrKeyComponents = Array (CID_ACC15_64,CID_ACC15_32,CID_ACC14_64,CID_ACC14_32,CID_ACC12,CID_ACC11,CID_XL15_64,CID_XL15_32,CID_XL14_64,CID_XL14_32,CID_XL12,CID_XL11,CID_GRV15_64,CID_GRV15_32,CID_GRV14_64,CID_GRV14_32,CID_GRV12,CID_LYN15_64,CID_LYN15_32,CID_ONE15_64,CID_ONE15_32,CID_ONE14_64,CID_ONE14_32,CID_ONE12,CID_ONE11,CID_MSO15_64,CID_MSO15_32,CID_MSO14_64,CID_MSO14_32,CID_MSO12,CID_MSO11,CID_OL15_64,CID_OL15_32,CID_OL14_64,CID_OL14_32,CID_OL12,CID_OL11,CID_PPT15_64,CID_PPT15_32,CID_PPT14_64,CID_PPT14_32,CID_PPT12,CID_PPT11,CID_PRJ15_64,CID_PRJ15_32,CID_PRJ14_64,CID_PRJ14_32,CID_PRJ12,CID_PRJ11,CID_PUB15_64,CID_PUB15_32,CID_PUB14_64,CID_PUB14_32,CID_PUB12,CID_PUB11,CID_IP15_64,CID_IP15_32,CID_IP14_64,CID_IP14_32,CID_IP12,CID_IP11,CID_VIS15_64,CID_VIS15_32,CID_VIS14_64,CID_VIS14_32,CID_VIS12,CID_VIS11,CID_WD15_64,CID_WD15_32,CID_WD14_64,CID_WD14_32,CID_WD12,CID_WD11,CID_SPD15_64,CID_SPD15_32,CID_SPD14_64,CID_SPD14_32,CID_SPD12,CID_SPD11)
+    arrKeyComponents = Array (CID_ACC16_64,CID_ACC16_32,CID_ACC15_64,CID_ACC15_32,CID_ACC14_64,CID_ACC14_32,CID_ACC12,CID_ACC11,CID_XL16_64,CID_XL16_32,CID_XL15_64,CID_XL15_32,CID_XL14_64,CID_XL14_32,CID_XL12,CID_XL11,CID_GRV16_64,CID_GRV16_32,CID_GRV15_64,CID_GRV15_32,CID_GRV14_64,CID_GRV14_32,CID_GRV12,CID_LYN16_64,CID_LYN16_32,CID_LYN15_64,CID_LYN15_32,CID_ONE16_64,CID_ONE16_32,CID_ONE15_64,CID_ONE15_32,CID_ONE14_64,CID_ONE14_32,CID_ONE12,CID_ONE11,CID_MSO16_64,CID_MSO16_32,CID_MSO15_64,CID_MSO15_32,CID_MSO14_64,CID_MSO14_32,CID_MSO12,CID_MSO11,CID_OL16_64,CID_OL16_32,CID_OL15_64,CID_OL15_32,CID_OL14_64,CID_OL14_32,CID_OL12,CID_OL11,CID_PPT16_64,CID_PPT16_32,CID_PPT15_64,CID_PPT15_32,CID_PPT14_64,CID_PPT14_32,CID_PPT12,CID_PPT11,CID_PRJ16_64,CID_PRJ16_32,CID_PRJ15_64,CID_PRJ15_32,CID_PRJ14_64,CID_PRJ14_32,CID_PRJ12,CID_PRJ11,CID_PUB16_64,CID_PUB16_32,CID_PUB15_64,CID_PUB15_32,CID_PUB14_64,CID_PUB14_32,CID_PUB12,CID_PUB11,CID_IP16_64,CID_IP15_64,CID_IP15_32,CID_IP14_64,CID_IP14_32,CID_IP12,CID_IP11,CID_VIS16_64,CID_VIS16_32,CID_VIS15_64,CID_VIS15_32,CID_VIS14_64,CID_VIS14_32,CID_VIS12,CID_VIS11,CID_WD16_64,CID_WD16_32,CID_WD15_64,CID_WD15_32,CID_WD14_64,CID_WD14_32,CID_WD12,CID_WD11,CID_SPD16_64,CID_SPD16_32,CID_SPD15_64,CID_SPD15_32,CID_SPD14_64,CID_SPD14_32,CID_SPD12,CID_SPD11)
     On Error Resume Next
     For Each CompId in arrKeyComponents
         Set CompClients = oMsi.ComponentClients (CompId)
@@ -7374,9 +8590,10 @@ Function IsOfficeProduct (sProductCode)
     On Error Resume Next
     
     IsOfficeProduct = False
-    If InStr(OFFICE_ALL, UCase(Right(sProductCode,28))) > 0 OR _
-       UCase (sProductCode) = UCase (sProductCode_C2R_15) OR _
-       InStr(OFFICEID,   UCase(Right(sProductCode,17))) > 0 Then
+    If InStr(OFFICE_ALL, UCase(Right(sProductCode, 28))) > 0 OR _
+       InStr(sProductCodes_C2R, UCase(sProductCode)) > 0 OR _
+       InStr(OFFICEID, UCase(Right(sProductCode, 17))) > 0 OR _
+       sProductCode = sPackageGuid Then
            IsOfficeProduct = True
     End If
 
@@ -7445,19 +8662,18 @@ Function GetVersionMajor(sProductCode)
     On Error Resume Next
 
     iVersionMajor = 0
-    iVersionMajor = oMsi.ProductInfo(sProductCode, "VersionMajor")  
-    If Not Err = 0 OR iVersionMajor = 0 Then 
-        If InStr(OFFICE_2000, UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 9
-        If InStr(ORK_2000,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 9
-        If InStr(PRJ_2000,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 9
-        If InStr(VIS_2002,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 10
-        If InStr(OFFICE_2002, UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 10
-        If InStr(OFFICE_2003, UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 11
-        If InStr(WSS_2,       UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 11
-        If InStr(SPS_2003,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 11
-        If InStr(PPS_2007,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 12
-        If InStr(OFFICEID,    UCase(Right(sProductCode,17))) > 0 Then iVersionMajor = Mid(sProductCode,4,2)
-    End If 'Err
+    If InStr(OFFICE_2000, UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 9
+    If InStr(ORK_2000,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 9
+    If InStr(PRJ_2000,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 9
+    If InStr(VIS_2002,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 10
+    If InStr(OFFICE_2002, UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 10
+    If InStr(OFFICE_2003, UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 11
+    If InStr(WSS_2,       UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 11
+    If InStr(SPS_2003,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 11
+    If InStr(PPS_2007,    UCase(Right(sProductCode,28))) > 0 Then iVersionMajor = 12
+    If InStr(OFFICEID,    UCase(Right(sProductCode,17))) > 0 Then iVersionMajor = Mid(sProductCode,4,2)
+    
+    If iVersionMajor = 0 Then iVersionMajor = oMsi.ProductInfo(sProductCode, "VersionMajor")  
 
     GetVersionMajor = iVersionMajor
 End Function
@@ -7485,7 +8701,7 @@ End Function 'GetMsiProductVersion
 'Alternatively this could be taken from the cached .msi by reading the 'SetupExeArpId' value from the 'Property' table
 Function GetArpProductname (sUninstallSubkey)
     Dim hDefKey
-    Dim sSubKeyName,sName,sValue
+    Dim sSubKeyName, sName, sValue, sVer
     On Error Resume Next
     
     GetArpProductname = sUninstallSubkey
@@ -7493,14 +8709,17 @@ Function GetArpProductname (sUninstallSubkey)
     sSubKeyName = REG_ARP & sUninstallSubkey & "\"
     sName = "DisplayName"
     
-    If RegReadExpStringValue(hDefKey,sSubKeyName,sName,sValue) Then 
+    If RegReadExpStringValue(hDefKey, sSubKeyName, sName, sValue) Then 
         If NOT IsNull(sValue) OR sValue = "" Then GetArpProductname = sValue
     Else
         'Try C2Rv2 location
-        sSubKeyName = REG_C2RVIRT_HKLM & sSubKeyName
-        If RegReadExpStringValue(hDefKey,sSubKeyName,sName,sValue) Then 
-            If NOT IsNull(sValue) OR sValue = "" Then GetArpProductname = sValue
-        End If
+        For Each sVer in dicActiveC2Rv2Versions.Keys
+            sSubKeyName = REG_OFFICE & sVer & REG_C2RVIRT_HKLM & sSubKeyName
+            If RegReadValue (hDefKey, sSubKeyName, sName, sValue, "REG_EXPAND_SZ") Then
+                If NOT IsNull(sValue) OR sValue = "" Then GetArpProductname = sValue
+                Exit For
+            End If
+        Next
     End If
 
 End Function
@@ -7515,7 +8734,7 @@ Function GetRegOriginalMsiName(sProductCodeCompressed,iContext,sSid)
     'PackageName is only available for per-machine, current user and managed user - not for other (unmanaged) user!
     
     sFallBackName = ""
-    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Then
+    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Or iContext = MSIINSTALLCONTEXT_C2RV3 Then
         hDefKey = GetRegHive(iContext,sSid,False)
         sSubKeyName = GetRegConfigKey(sProductCodeCompressed,iContext,sSid,False) & "SourceList\"
     Else
@@ -7538,7 +8757,7 @@ Function GetRegTransforms(sProductCodeCompressed,iContext,sSid)
 
     'Transforms is only available for per-machine and current user - not for other user!
         
-    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Then
+    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Or iContext = MSIINSTALLCONTEXT_C2RV3 Then
         hDefKey = GetRegHive(iContext,sSid,False)
         sSubKeyName = GetRegConfigKey(sProductCodeCompressed,iContext,sSid,False)
         sName = "Transforms"
@@ -7561,7 +8780,7 @@ Function GetRegPackageCode(sProductCodeCompressed,iContext,sSid)
 
     'PackageCode is only available for per-machine and current user - not for other user!
         
-    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Then
+    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Or iContext = MSIINSTALLCONTEXT_C2RV3 Then
         hDefKey = GetRegHive(iContext,sSid,False)
         sSubKeyName = GetRegConfigKey(sProductCodeCompressed,iContext,sSid,False)
         sName = "PackageCode"
@@ -7571,7 +8790,7 @@ Function GetRegPackageCode(sProductCodeCompressed,iContext,sSid)
         Exit Function
     End If 'sSid = sCurUserSid
 
-    If RegReadExpStringValue(hDefKey,sSubKeyName,sName,sValue) Then GetRegPackageCode = sValue Else GetRegPackageCode = "-"
+    If RegReadExpStringValue(hDefKey, sSubKeyName, sName, sValue) Then GetRegPackageCode = sValue Else GetRegPackageCode = "-"
 
 End Function 'GetRegPackageCode
 '=======================================================================================================
@@ -7587,7 +8806,7 @@ Function GetRegProductName(sProductCodeCompressed,iContext,sSid)
     'If not per-machine, managed or SID not sCurUserSid tweak to 'DisplayName' from GlobalConfig key
         
     sFallBackName = ""
-    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_USERMANAGED Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Then
+    If sSid = sCurUserSid Or iContext = MSIINSTALLCONTEXT_USERMANAGED Or iContext = MSIINSTALLCONTEXT_MACHINE Or iContext = MSIINSTALLCONTEXT_C2RV2 Or iContext = MSIINSTALLCONTEXT_C2RV3 Then
         If Not iContext = MSIINSTALLCONTEXT_USERMANAGED Then
             hDefKey = GetRegHive(iContext,sSid,False)
             sSubKeyName = GetRegConfigKey(sProductCodeCompressed,iContext,sSid,False)
@@ -7625,7 +8844,7 @@ Function GetRegProductState(sProductCodeCompressed,iContext,sSid)
         iTmpContext = iContext
         sName = "LocalPackage"
     End If 'iContext = MSIINSTALLCONTEXT_USERMANAGED
-    sSubKeyName = GetRegConfigKey(sProductCodeCompressed,iTmpContext,sSid,True) & "InstallProperties\"
+    sSubKeyName = GetRegConfigKey(sProductCodeCompressed, iTmpContext, sSid, True) & "InstallProperties\"
     
     If RegKeyExists (hDefKey,sSubKeyName) Then
         If RegValExists(hDefKey,sSubKeyName,sName) Then 
@@ -7773,6 +8992,7 @@ Function GetContextString(iContext)
         Case MSIINSTALLCONTEXT_MACHINE          : GetContextString = "MSIINSTALLCONTEXT_MACHINE"
         Case MSIINSTALLCONTEXT_ALL              : GetContextString = "MSIINSTALLCONTEXT_ALL"
         Case MSIINSTALLCONTEXT_C2RV2            : GetContextString = "MSIINSTALLCONTEXT_C2RV2"
+        Case MSIINSTALLCONTEXT_C2RV3            : GetContextString = "MSIINSTALLCONTEXT_C2RV3"
         Case Else                               : GetContextString = iContext
     End Select
 End Function
@@ -7791,8 +9011,8 @@ Function GetHiveString(hDefKey)
 End Function 'GetHiveString
 '=======================================================================================================
 
-Function GetRegConfigPatchesKey(iContext,sSid,bGlobal)
-    Dim sTmpProductCode,sSubKeyName
+Function GetRegConfigPatchesKey(iContext, sSid, bGlobal)
+    Dim sTmpProductCode, sSubKeyName, sKey, sVer
     On Error Resume Next
 
     sSubKeyName = ""
@@ -7805,17 +9025,11 @@ Function GetRegConfigPatchesKey(iContext,sSid,bGlobal)
         Else
             sSubKeyName = REG_CONTEXTUSER
         End If
-    Case MSIINSTALLCONTEXT_MACHINE
+    Case MSIINSTALLCONTEXT_MACHINE, MSIINSTALLCONTEXT_C2RV2, MSIINSTALLCONTEXT_C2RV3
         If bGlobal Then
             sSubKeyName = REG_GLOBALCONFIG & "S-1-5-18\Patches\"
         Else
             sSubKeyName = REG_CONTEXTMACHINE & "\Patches\"
-        End If
-    Case MSIINSTALLCONTEXT_C2RV2
-        If bGlobal Then
-            sSubKeyName = REG_C2RVIRT_HKLM & REG_GLOBALCONFIG & "S-1-5-18\Patches\" 
-        Else
-            sSubKeyName = REG_C2RVIRT_HKLM & REG_CONTEXTMACHINE & "Patches\" 
         End If
     Case Else
     End Select
@@ -7824,14 +9038,16 @@ Function GetRegConfigPatchesKey(iContext,sSid,bGlobal)
     
 End Function 'GetRegConfigPatchesKey
 '=======================================================================================================
+
 Function GetRegConfigKey(sProductCode, iContext, sSid, bGlobal)
-    Dim sTmpProductCode,sSubKeyName
+    Dim sTmpProductCode, sSubKeyName, sKey
+    Dim iVM
     On Error Resume Next
 
     sTmpProductCode = sProductCode
     sSubKeyName = ""
     If NOT sTmpProductCode = "" Then
-        If IsValidGuid(sTmpProductCode,GUID_UNCOMPRESSED) Then sTmpProductCode = GetCompressedGuid(sTmpProductCode)
+        If IsValidGuid(sTmpProductCode, GUID_UNCOMPRESSED) Then sTmpProductCode = GetCompressedGuid(sTmpProductCode)
     End If 'NOT sTmpProductCode = ""
 
     Select Case iContext
@@ -7850,10 +9066,19 @@ Function GetRegConfigKey(sProductCode, iContext, sSid, bGlobal)
             sSubKeyName = REG_CONTEXTMACHINE & "Products\" & sTmpProductCode & "\"
         End If
     Case MSIINSTALLCONTEXT_C2RV2
+        sKey = REG_OFFICE & "15.0" & REG_C2RVIRT_HKLM
         If bGlobal Then
-            sSubKeyName = REG_C2RVIRT_HKLM & REG_GLOBALCONFIG & "S-1-5-18\Products\" & sTmpProductCode & "\"
+            sSubKeyName = sKey & REG_GLOBALCONFIG & "S-1-5-18\Products\" & sTmpProductCode & "\"
         Else
-            sSubKeyName = REG_C2RVIRT_HKLM & "Software\Classes\" & REG_CONTEXTMACHINE & "Products\" & sTmpProductCode & "\"
+            sSubKeyName = sKey & "Software\Classes\" & REG_CONTEXTMACHINE & "Products\" & sTmpProductCode & "\"
+        End If
+    Case MSIINSTALLCONTEXT_C2RV3
+        sKey = REG_OFFICE & REG_C2RVIRT_HKLM
+        sKey = Replace(sKey, "\\", "\")
+        If bGlobal Then
+            sSubKeyName = sKey & REG_GLOBALCONFIG & "S-1-5-18\Products\" & sTmpProductCode & "\"
+        Else
+            sSubKeyName = sKey & "Software\Classes\" & REG_CONTEXTMACHINE & "Products\" & sTmpProductCode & "\"
         End If
     Case Else
     End Select
@@ -7882,7 +9107,7 @@ Function GetRegHive(iContext, sSid, bGlobal)
         Else
             GetRegHive = HKEY_CLASSES_ROOT
         End If
-    Case MSIINSTALLCONTEXT_C2RV2
+    Case MSIINSTALLCONTEXT_C2RV2, MSIINSTALLCONTEXT_C2RV3
         GetRegHive = HKEY_LOCAL_MACHINE
     Case Else
     End Select
@@ -8069,13 +9294,18 @@ End Function 'RegEnumKey
 'Return the alternate regkey location on 64bit environment
 Function Wow64Key(hDefKey, sSubKeyName)
     Dim iPos
+    Dim sKey, sVer
     Dim fReplaced
 
     fReplaced = False
-    If InStr(sSubKeyName, REG_C2RVIRT_HKLM) > 0 Then
-        sSubKeyName = Replace(sSubKeyName, REG_C2RVIRT_HKLM, "")
-        fReplaced = True
-    End If
+    For Each sVer in dicActiveC2Rv2Versions.Keys
+        sKey = REG_OFFICE & sVer & REG_C2RVIRT_HKLM
+        If InStr(sSubKeyName, sKey) > 0 Then
+            sSubKeyName = Replace(sSubKeyName, sKey, "")
+            fReplaced = True
+            Exit For
+        End If
+    Next
     Select Case hDefKey
         Case HKCU
             If Left(sSubKeyName,17) = "Software\Classes\" Then
@@ -8095,8 +9325,8 @@ Function Wow64Key(hDefKey, sSubKeyName)
             Wow64Key = "Wow6432Node\" & sSubKeyName
     End Select 'hDefKey
     If fReplaced Then
-        sSubKeyName = REG_C2RVIRT_HKLM & sSubKeyName
-        Wow64Key = REG_C2RVIRT_HKLM & Wow64Key
+        sSubKeyName = sKey & sSubKeyName
+        Wow64Key = sKey & Wow64Key
     End If
 End Function 'Wow64Key
 '=======================================================================================================
@@ -8187,16 +9417,21 @@ Function GetUserSids(sContext)
     Dim arrKeys
     On Error Resume Next
 
+    sUserName = oShell.ExpandEnvironmentStrings ("%USERNAME%") 
+    sDomain = oShell.ExpandEnvironmentStrings ("%USERDOMAIN%") 
+
     ReDim arrKeys(-1)
     Select Case sContext
     Case "Current"
-        If RegEnumKey(HKCU,"Software\Microsoft\Protected Storage System Provider\",arrKeys) Then
+        If RegEnumKey(HKCU,"Software\Microsoft\Protected Storage System Provider\", arrKeys) Then
             sCurUserSid = arrKeys(0)
+        Else
+            sCurUserSid = GetObject ("winmgmts:\\.\root\cimv2:Win32_UserAccount.Domain='" & sDomain & "',Name='" & sUserName & "'").SID
         End If 'RegEnumKey
     
     'Add SID's that are not "S-1-5-18" (Len("S-1-5-18") = 8
     Case "UserUnmanaged"
-        If RegEnumKey(HKLM,REG_GLOBALCONFIG,arrKeys) Then
+        If RegEnumKey(HKLM, REG_GLOBALCONFIG, arrKeys) Then
             n = 0
             For i = 0 To UBound(arrKeys)
                 If Len(arrKeys(i)) > 8 Then
@@ -8207,7 +9442,7 @@ Function GetUserSids(sContext)
             Next 'i
         End If 'RegEnumKey
     Case "UserManaged"
-        If RegEnumKey(HKLM,REG_CONTEXTUSERMANAGED,arrKeys) Then
+        If RegEnumKey(HKLM, REG_CONTEXTUSERMANAGED, arrKeys) Then
             n = 0
             For i = 0 To UBound(arrKeys)
                 If Len(arrKeys(i)) > 8 Then
@@ -8223,7 +9458,7 @@ Function GetUserSids(sContext)
 End Function
 '=======================================================================================================
 
-Function GetArrayPosition (Arr,sProductCode)
+Function GetArrayPosition (Arr, sProductCode)
     Dim iPos
     On Error Resume Next
 
@@ -8237,6 +9472,7 @@ Function GetArrayPosition (Arr,sProductCode)
             End If
         Next 'iPos
     End If 'CheckArray
+    If iPos = -1 Then WriteDebug sActiveSub, "Warning: Invalid ArrayPosition for " & sProductCode & " - Stack: " & sStack
 End Function
 '=======================================================================================================
 
@@ -8416,7 +9652,7 @@ Sub ParseCmdLine
                  "ROIScan (Robust Office Inventory Scan) - Version " & SCRIPTBUILD & vbCrLf & _
                  "Copyright (c) 2008,2009,2010 Microsoft Corporation. All Rights Reserved." & vbCrLf & vbCrLf & _
                  "Inventory tool for to create a log of " & vbCrLf & "installed Microsoft Office applications." & vbCrLf & _
-                 "Supports Office 2000, XP, 2003, 2007, 2010 " & vbCrLf & vbCrLf & _
+                 "Supports Office 2000, XP, 2003, 2007, 2010, 2013, 2016, O365 " & vbCrLf & vbCrLf & _
                  "Usage:" & vbTab & "ROIScan.vbs [Options]" & vbCrLf & vbCrLf & _
                  " /?" & vbTab & vbTab & vbTab & "Display this help"& vbCrLf &_
                  " /All" & vbTab & vbTab & vbTab & "Include non Office products" & vbCrLf &_
