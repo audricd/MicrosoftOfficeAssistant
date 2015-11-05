@@ -1,4 +1,4 @@
-' Name: Robust Office Inventory Scan - Version 1.8.0e
+' Name: Robust Office Inventory Scan - Version 1.8.1
 ' Author: Microsoft Customer Support Services
 ' Copyright (c) Microsoft Corporation. All rights reserved.
 ' Script to create an inventory scan of installed Office applications
@@ -7,7 +7,7 @@
 
 Option Explicit
 On Error Resume Next
-Const SCRIPTBUILD = "1.8.0e"
+Const SCRIPTBUILD = "1.8.1"
 Dim sPathOutputFolder : sPathOutputFolder = ""
 Dim fQuiet : fQuiet = False
 Dim fLogFeatures : fLogFeatures = False
@@ -248,20 +248,30 @@ Const LOGHEADING_H3                   = 3 '    Heading 3 ' '
 Const TEXTINDENT                      = "                        "
 Const CATEGORY                        = 1
 Const TAG                             = 2
-Const OSPP_ID = 0
-Const OSPP_APPLICATIONID = 1
-Const OSPP_PARTIALPRODUCTKEY = 2
-Const OSPP_DESCRIPTION = 3
-Const OSPP_NAME = 4
-Const OSPP_LICENSESTATUS = 5
-Const OSPP_LICENSESTATUSREASON = 6
-Const OSPP_PRODUCTKEYID = 7
-Const OSPP_GRACEPERIODREMAINING = 8
-Const OSPP_LICENSEFAMILY = 9
-Const OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME = 10
-Const OSPP_KEYMANAGEMENTSERVICEPORT = 11
-Const OSPP_VLACTIVATIONINTERVAL = 12
-Const OSPP_VLRENEWALINTERVAL = 13
+Const OSPP_ACTIVATIONTYPE = 0
+Const OSPP_ID = 1
+Const OSPP_APPLICATIONID = 2
+Const OSPP_PARTIALPRODUCTKEY = 3
+Const OSPP_DESCRIPTION = 4
+Const OSPP_NAME = 5
+Const OSPP_LICENSESTATUS = 6
+Const OSPP_LICENSESTATUSREASON = 7
+Const OSPP_PRODUCTKEYID = 8
+Const OSPP_GRACEPERIODREMAINING = 9
+Const OSPP_LICENSEFAMILY = 10
+Const OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME = 11
+Const OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINEPORT = 12
+Const OSPP_KEYMANAGEMENTSERVICEPORT = 13
+Const OSPP_KEYMANGEMENTSERVICELOOKUPDOMAIN = 14
+Const OSPP_VLACTIVATIONINTERVAL = 15
+Const OSPP_VLRENEWALINTERVAL = 16
+Const OSPP_ADACTIVATIONOBJECTNAME = 17
+Const OSPP_ADACTIVATIONOBJECTDN = 18
+Const OSPP_ADACTIVATIONCSVLPID = 19
+Const OSPP_ADACTIVATIONCSVLSKUID = 20
+Const OSPP_PRODUCTKEYID2 = 21
+Const OSPP_MACHINEKEY  = 22
+
 'Global_Access_Core - msaccess.exe
 Const CID_ACC16_64 = "{27C919A6-3FA5-47F9-A3EC-BC7FF2AAD452}"
 Const CID_ACC16_32 = "{E34AA7C4-8845-4BD7-BAC6-26554B60823B}"
@@ -4209,9 +4219,9 @@ Sub OsppInit
     Dim oWmiLocal
     Set oWmiLocal = GetObject("winmgmts:\\.\root\cimv2")
     If iVersionNt > 601 Then 
-        Set Spp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, KeyManagementServicePort, VLActivationInterval, VLRenewalInterval FROM SoftwareLicensingProduct")
+        Set Spp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, EvaluationEndDate, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, KeyManagementServiceLookupDomain, VLActivationType, ADActivationObjectName, ADActivationObjectDN, ADActivationCsvlkPid, ADActivationCsvlkSkuId, VLActivationTypeEnabled, DiscoveredKeyManagementServiceMachineName, DiscoveredKeyManagementServiceMachinePort, VLActivationInterval, VLRenewalInterval, KeyManagementServiceMachine, KeyManagementServicePort, ProductKeyID2 FROM SoftwareLicensingProduct")
     End If
-    Set Ospp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, KeyManagementServicePort, VLActivationInterval, VLRenewalInterval FROM OfficeSoftwareProtectionProduct")
+    Set Ospp = oWmiLocal.ExecQuery("SELECT ID, ApplicationId, EvaluationEndDate, PartialProductKey, Description, Name, LicenseStatus, LicenseStatusReason, ProductKeyID, GracePeriodRemaining, LicenseFamily, DiscoveredKeyManagementServiceMachineName, DiscoveredKeyManagementServiceMachinePort, VLActivationInterval, VLRenewalInterval, KeyManagementServiceMachine, KeyManagementServicePort, ProductKeyID2 FROM OfficeSoftwareProtectionProduct")
     bOsppInit = True
 End Sub 'OsppInit
 '=======================================================================================================
@@ -4270,10 +4280,10 @@ End Function 'GetLicCnt
 
 Function GetLicenseData(iPosMaster, iVersionMajor, ByVal sConfigName, iLicPos, sPossibleSkusFull)
     On Error Resume Next
-    Dim arrLicData (14)
+    Dim arrLicData (22)
     Dim iPropCnt, iLicCnt, iLeft
     Dim ProdLic, prop, ConfigProd, ProtectionClass
-    Dim sPrefix, sAllLic, sName
+    Dim sPrefix, sAllLic, sName, sTmp
     Dim arrLic
     Dim fMsiMatchesOsppID
     
@@ -4303,6 +4313,7 @@ Function GetLicenseData(iPosMaster, iVersionMajor, ByVal sConfigName, iLicPos, s
                 If Len(ProdLic.Name) > iLeft -1 Then
                     If (LCase(Left(ProdLic.Name, iLeft)) = LCase(sPrefix & ConfigProd) OR fMsiMatchesOsppID) AND (iLicCnt > iLicPos) AND InStr(sPossibleSkusFull, Prodlic.Name) > 0 Then 
                         iLicPos = iLicCnt
+                        arrLicData(OSPP_ACTIVATIONTYPE) = ProdLic.VLActivationTypeEnabled
                         arrLicData(OSPP_ID) = ProdLic.ID
                         arrLicData(OSPP_APPLICATIONID) = ProdLic.ApplicationId
                         arrLicData(OSPP_PARTIALPRODUCTKEY) = ProdLic.PartialProductKey
@@ -4310,13 +4321,31 @@ Function GetLicenseData(iPosMaster, iVersionMajor, ByVal sConfigName, iLicPos, s
                         arrLicData(OSPP_NAME) = ProdLic.Name
                         arrLicData(OSPP_LICENSESTATUS) = ProdLic.LicenseStatus
                         arrLicData(OSPP_LICENSESTATUSREASON) = ProdLic.LicenseStatusReason
-                        arrLicData(OSPP_PRODUCTKEYID) = ProdLic.ProductKeyID
                         arrLicData(OSPP_GRACEPERIODREMAINING) = ProdLic.GracePeriodRemaining
                         arrLicData(OSPP_LICENSEFAMILY) = ProdLic.LicenseFamily
                         arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME) = ProdLic.DiscoveredKeyManagementServiceMachineName
                         arrLicData(OSPP_KEYMANAGEMENTSERVICEPORT) = ProdLic.KeyManagementServicePort
                         arrLicData(OSPP_VLACTIVATIONINTERVAL) = ProdLic.VLActivationInterval
                         arrLicData(OSPP_VLRENEWALINTERVAL) = ProdLic.VLRenewalInterval
+                        If Not IsNull (ProdLic.ProductKeyID) Then
+                            arrLicData(OSPP_PRODUCTKEYID) = ProdLic.ProductKeyID
+                            arrLicData(OSPP_PRODUCTKEYID2) = ProdLic.ProductKeyID2
+                            sTmp = Right (Replace (arrLicData(OSPP_PRODUCTKEYID2), "-", ""), 19)
+                            arrLicData(OSPP_MACHINEKEY) = Mid (sTmp, 1, 5) & "-" & Mid (sTmp, 6, 3) & "-" & Mid (sTmp, 9, 6)
+                        End If
+                        If iVersionNt > 601 Then
+                            arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINEPORT) = ProdLic.DiscoveredKeyManagementServiceMachinePort
+                            arrLicData(OSPP_KEYMANGEMENTSERVICELOOKUPDOMAIN) = ProdLic.KeyManagementServiceLookupDomain
+                            Select Case ProdLic.VLActivationTypeEnabled
+                            Case 0, 1 'AD
+                                arrLicData(OSPP_ADACTIVATIONOBJECTNAME) = ProdLic.ADActivationObjectName
+                                arrLicData(OSPP_ADACTIVATIONOBJECTDN) = ProdLic.ADActivationObjectDN
+                                arrLicData(OSPP_ADACTIVATIONCSVLPID) = ProdLic.ADActivationCsvlkPid
+                                arrLicData(OSPP_ADACTIVATIONCSVLSKUID) = ProdLic.ADActivationCsvlkSkuId
+                            Case 2 'KMS
+                            Case 3 'Token
+                            End Select
+                        End If
                         GetLicenseData = arrLicData
                         Exit Function
                     End If
@@ -4788,9 +4817,16 @@ Sub AddLicXmlString (sXmlLogLine, arrLicData)
     sXmlLogLine = sXmlLogLine & " PartialProductkey=" & chr(34) & arrLicData(OSPP_PARTIALPRODUCTKEY) & chr(34)
     sXmlLogLine = sXmlLogLine & " ApplicationID=" & chr(34) & arrLicData(OSPP_APPLICATIONID) & chr(34)
     sXmlLogLine = sXmlLogLine & " ProductKeyID=" & chr(34) & arrLicData(OSPP_PRODUCTKEYID) & chr(34)
+    sXmlLogLine = sXmlLogLine & " ProductID=" & chr(34) & arrLicData(OSPP_PRODUCTKEYID2) & chr(34)
+    sXmlLogLine = sXmlLogLine & " MachineKey=" & chr(34) & arrLicData(OSPP_MACHINEKEY) & chr(34)
+    sXmlLogLine = sXmlLogLine & " ActivationType=" & chr(34) & arrLicData(OSPP_ACTIVATIONTYPE) & chr(34)
     sXmlLogLine = sXmlLogLine & " SkuID=" & chr(34) & arrLicData(OSPP_ID) & chr(34)
     sXmlLogLine = sXmlLogLine & " KmsServer=" & chr(34) & arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME) & chr(34)
-    sXmlLogLine = sXmlLogLine & " KmsPort=" & chr(34) & arrLicData(OSPP_KEYMANAGEMENTSERVICEPORT) & chr(34)
+    sXmlLogLine = sXmlLogLine & " KmsPort=" & chr(34) & arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINEPORT) & chr(34)
+    sXmlLogLine = sXmlLogLine & " ActivationObjectName=" & chr(34) & arrLicData(OSPP_ADACTIVATIONOBJECTNAME) & chr(34)
+    sXmlLogLine = sXmlLogLine & " ActivationObjectDN=" & chr(34) & arrLicData(OSPP_ADACTIVATIONOBJECTDN) & chr(34)
+    sXmlLogLine = sXmlLogLine & " ActivationObjectExtendedPID=" & chr(34) & arrLicData(OSPP_ADACTIVATIONCSVLPID) & chr(34)
+    sXmlLogLine = sXmlLogLine & " ActivationObjectActivationID=" & chr(34) & arrLicData(OSPP_ADACTIVATIONCSVLSKUID) & chr(34)
     sXmlLogLine = sXmlLogLine & " RemainingGracePeriod=" & chr(34) & CInt(arrLicData(OSPP_GRACEPERIODREMAINING) / 1440) & chr(34)
     sXmlLogLine = sXmlLogLine & " ActivationInterval=" & chr(34) & arrLicData(OSPP_VLACTIVATIONINTERVAL) / 60 & chr(34)
     sXmlLogLine = sXmlLogLine & " RenewalInterval=" & chr(34) & arrLicData(OSPP_VLRENEWALINTERVAL) / 1440 & chr(34) & " />"
@@ -4809,18 +4845,45 @@ Sub AddLicTxtString (sOsppLicenses, arrLicData)
     sOsppLicenses = sOsppLicenses & "#;#" & "License Status;" & sTmp
     sOsppLicenses = sOsppLicenses & "#;#" & "Partial ProductKey;" & arrLicData(OSPP_PARTIALPRODUCTKEY)
     sOsppLicenses = sOsppLicenses & "#;#" & "ApplicationID;" & arrLicData(OSPP_APPLICATIONID)
-    sOsppLicenses = sOsppLicenses & "#;#" & "ProductKeyID;" & arrLicData(OSPP_PRODUCTKEYID)
     sOsppLicenses = sOsppLicenses & "#;#" & "SKU ID;" & arrLicData(OSPP_ID)
-    If InStr(arrLicData(OSPP_DESCRIPTION),"VOLUME_KMSCLIENT") > 0 Then
+    sOsppLicenses = sOsppLicenses & "#;#" & "ProductKeyID;" & arrLicData(OSPP_PRODUCTKEYID)
+    sOsppLicenses = sOsppLicenses & "#;#" & "Product ID;" & arrLicData(OSPP_PRODUCTKEYID2)
+    sOsppLicenses = sOsppLicenses & "#;#" & "Machine Key;" & arrLicData(OSPP_MACHINEKEY)
+    Select Case arrLicData (OSPP_ACTIVATIONTYPE)
+    Case 0 ' ALL
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Type;" & arrLicData(OSPP_ACTIVATIONTYPE) & " (ALL)"
+        sOsppLicenses = sOsppLicenses & "#;#" & "KMS Server;" & arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME)
+        sOsppLicenses = sOsppLicenses & "#;#" & "KMS Port;" & arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINEPORT)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object Name;" & arrLicData(OSPP_ADACTIVATIONOBJECTNAME)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object DN;" & arrLicData(OSPP_ADACTIVATIONOBJECTDN)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object Extended PID;" & arrLicData(OSPP_ADACTIVATIONCSVLPID)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object Activation ID;" & arrLicData(OSPP_ADACTIVATIONCSVLSKUID)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Licensed Days Remaining;" & CInt(arrLicData(OSPP_GRACEPERIODREMAINING) / 1440)
+        sOsppLicenses = sOsppLicenses & "#;#" & "VL Activation Interval;" & arrLicData(OSPP_VLACTIVATIONINTERVAL) / 60 & " hours"
+        sOsppLicenses = sOsppLicenses & "#;#" & "VL Renewal Interval;" & arrLicData(OSPP_VLRENEWALINTERVAL) / 1440 & " days"
+    Case 1 ' AD
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Type;" & arrLicData(OSPP_ACTIVATIONTYPE) & " (AD)"
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object Name;" & arrLicData(OSPP_ADACTIVATIONOBJECTNAME)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object DN;" & arrLicData(OSPP_ADACTIVATIONOBJECTDN)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object Extended PID;" & arrLicData(OSPP_ADACTIVATIONCSVLPID)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Object Activation ID;" & arrLicData(OSPP_ADACTIVATIONCSVLSKUID)
+        sOsppLicenses = sOsppLicenses & "#;#" & "Licensed Days Remaining;" & CInt(arrLicData(OSPP_GRACEPERIODREMAINING) / 1440)
+        sOsppLicenses = sOsppLicenses & "#;#" & "VL Activation Interval;" & arrLicData(OSPP_VLACTIVATIONINTERVAL) / 60 & " hours"
+        sOsppLicenses = sOsppLicenses & "#;#" & "VL Renewal Interval;" & arrLicData(OSPP_VLRENEWALINTERVAL) / 1440 & " days"
+    Case 2 ' KMS
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Type;" & arrLicData(OSPP_ACTIVATIONTYPE) & " (KMS)"
         sOsppLicenses = sOsppLicenses & "#;#" & "KMS Server;" & arrLicData(OSPP_DISCOVEREDKEYMANAGEMENTSERVICEMACHINENAME)
         sOsppLicenses = sOsppLicenses & "#;#" & "KMS Port;" & arrLicData(OSPP_KEYMANAGEMENTSERVICEPORT)
         sOsppLicenses = sOsppLicenses & "#;#" & "Licensed Days Remaining;" & CInt(arrLicData(OSPP_GRACEPERIODREMAINING) / 1440)
         sOsppLicenses = sOsppLicenses & "#;#" & "VL Activation Interval;" & arrLicData(OSPP_VLACTIVATIONINTERVAL) / 60 & " hours"
         sOsppLicenses = sOsppLicenses & "#;#" & "VL Renewal Interval;" & arrLicData(OSPP_VLRENEWALINTERVAL) / 1440 & " days"
-    Else
+    Case 3 ' Token
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Type;" & arrLicData(OSPP_ACTIVATIONTYPE) & " (Token)"
+    Case Else
+        sOsppLicenses = sOsppLicenses & "#;#" & "Activation Type;" & arrLicData(OSPP_ACTIVATIONTYPE) & " (?)"
         If arrLicData(OSPP_GRACEPERIODREMAINING) <> 0 Then _
             sOsppLicenses = sOsppLicenses & "#;#" & "Remaining Grace Period;" & CInt(arrLicData(OSPP_GRACEPERIODREMAINING) / 1440) & " days"
-    End If
+    End Select
 End Sub 'AddLicTxtString
 
 '=======================================================================================================
@@ -5159,51 +5222,49 @@ Sub FindV2VirtualizedProducts
     End If
 
     'ActiveConfiguration & ConfigProducts
-    If RegReadValue(HKLM, REG_C2RPRODUCTIDS, "ActiveConfiguration", sActiveConfiguration, REG_SZ) Then
-        'Config IDs
-        'Try (but not rely on) the ProductRleaseIds entry in Configuration
-        If RegReadValue(HKLM, REG_C2RCONFIGURATION, "ProductReleaseIds", sValue, REG_SZ) Then
-            For Each prod in Split(sValue, ",")
-                If NOT dicVirt2ConfigID.Exists(prod) Then
-                    dicVirt2ConfigID.Add prod, prod
-                End If
-            Next 'prod
-        End If
+    'Config IDs
+    'Try (but not rely on) the ProductRleaseIds entry in Configuration
+    If RegReadValue(HKLM, REG_C2RCONFIGURATION, "ProductReleaseIds", sValue, REG_SZ) Then
+        For Each prod in Split(sValue, ",")
+            If NOT dicVirt2ConfigID.Exists(prod) Then
+                dicVirt2ConfigID.Add prod, prod
+            End If
+        Next 'prod
+    End If
 
-        If RegEnumKey(HKLM, REG_C2RPRODUCTIDS & "Active", arrConfigProducts) Then
-    	    For Each prod In arrConfigProducts
-    		    sProd = prod
-    		    Select Case LCase(sProd)
-    		    Case "culture", "stream"
-    		    Case Else
-	                'add to ConfigID collection
-	                If NOT dicVirt2ConfigID.Exists(sProd) Then
-	                    dicVirt2ConfigID.Add sProd, prod
-	                End If
-    		    End Select
-    	    Next 'prod
-        End If 'arrConfigProducts
+    If RegEnumKey(HKLM, REG_C2RPRODUCTIDS & "Active", arrConfigProducts) Then
+    	For Each prod In arrConfigProducts
+    		sProd = prod
+    		Select Case LCase(sProd)
+    		Case "culture", "stream"
+    		Case Else
+	            'add to ConfigID collection
+	            If NOT dicVirt2ConfigID.Exists(sProd) Then
+	                dicVirt2ConfigID.Add sProd, prod
+	            End If
+    		End Select
+    	Next 'prod
+    End If 'arrConfigProducts
 
-        'Shared ProductVersion
-        If RegReadStringValue(HKLM, REG_C2RPRODUCTIDS & "Active\culture\", "x-none", sVersionFallback) Then
-            dicC2RPropV2.Add STR_VERSION, sVersionFallback
-        End If
+    'Shared ProductVersion
+    If RegReadStringValue(HKLM, REG_C2RPRODUCTIDS & "Active\culture\", "x-none", sVersionFallback) Then
+        dicC2RPropV2.Add STR_VERSION, sVersionFallback
+    End If
     	
-        'Cultures
-        If RegEnumValues (HKLM, REG_C2RPRODUCTIDS & "Active\culture", arrCultures, arrTypes) Then
-    		For Each culture in arrCultures
-    			sCult = culture
-    			Select Case LCase(sCult)
-    			Case "x-none"
-    			Case Else
-	                'add to ConfigID collection
-	                If NOT dicVirt2Cultures.Exists(sCult) Then
-	                	dicVirt2Cultures.Add sCult, culture
-	                End If
-    			End Select
-    		Next 'culture
-        End If 'cultures
-    End If 'ActiveConfiguration
+    'Cultures
+    If RegEnumValues (HKLM, REG_C2RPRODUCTIDS & "Active\culture", arrCultures, arrTypes) Then
+    	For Each culture in arrCultures
+    		sCult = culture
+    		Select Case LCase(sCult)
+    		Case "x-none"
+    		Case Else
+	            'add to ConfigID collection
+	            If NOT dicVirt2Cultures.Exists(sCult) Then
+	                dicVirt2Cultures.Add sCult, culture
+	            End If
+    		End Select
+    	Next 'culture
+    End If 'cultures
 
     ' enum ARP to identify configuration products
     
@@ -5997,8 +6058,8 @@ Function GetBr(sValue)
     sCh4 = hAtS(Array("37","66","66","62","63","36","62","66","2D","62","63","33","32","2D","34","66","39","32","2D","38","39","38","32","2D","66","39","64","64","31","37","66","64","33","31","31","34"))
     If InStr(sValue, sCh0) > 0 Then sBr = hAtS(Array("4F","31","35","20","50","55"))
     If InStr(sValue, sCh1) > 0 Then sBr = hAtS(Array("43","75","72","72","65","6E","74","20","28","43","42","29"))
-    If InStr(sValue, sCh2) > 0 Then sBr = hAtS(Array("49","6E","73","69","64","65","72","73","20","28","50","72","65","76","69","65","77","29"))
-    If InStr(sValue, sCh3) > 0 Then sBr = hAtS(Array("46","69","72","73","74","20","52","65","6C","65","61","73","65","20","42","75","73","69","6E","65","73","73","20","28","46","52","20","43","42","42","29"))
+    If InStr(sValue, sCh2) > 0 Then sBr = hAtS(Array("46","69","72","73","74","52","65","6C","65","61","73","65","43","75","72","72","65","6E","74","20","28","49","6E","73","69","64","65","72","29"))
+    If InStr(sValue, sCh3) > 0 Then sBr = hAtS(Array("46","69","72","73","74","52","65","6C","65","61","73","65","42","75","73","69","6E","65","73","73","20","28","46","52","20","43","42","42","29"))
     If InStr(sValue, sCh4) > 0 Then sBr = hAtS(Array("42","75","73","69","6E","65","73","73","20","28","43","42","42","29"))
     GetBr = sBr
 End Function
@@ -7507,7 +7568,7 @@ Sub PrepareLog (sLogFormat)
                                     CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, arrTmp(0), arrTmp(1)
                                 Else
                                     If NOT (fBasicMode AND i > 5) Then
-                                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", arrTmp(0) & ":" & Space(25 - Len(arrTmp(0))) & arrTmp(1)
+                                        CacheLog LOGPOS_PRODUCT, LOGHEADING_NONE, "", arrTmp(0) & ":" & Space(33 - Len(arrTmp(0))) & arrTmp(1)
                                     End If
                                 End If
                                 i = i + 1
@@ -8016,8 +8077,8 @@ Function FormatCategory(sCategory)
     Dim sTmp : Dim i
     On Error Resume Next
 
-    Const iCATLEN = 30
-    If Len(sCategory) > 29 Then sTmp = sTmp & vbTab Else _
+    Const iCATLEN = 33
+    If Len(sCategory) > iCATLEN - 1 Then sTmp = sTmp & vbTab Else _
         sTmp = sTmp & Space(iCATLEN - Len(sCategory) - 1)
 
     FormatCategory = sCategory & sTmp 
